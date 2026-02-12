@@ -1,0 +1,122 @@
+{
+  "name": "ocbs_backup",
+  "version": "0.1.0",
+  "description": "OpenClaw Backup System - Incremental backup with restore capability",
+  "author": "OpenClaw Community",
+  "license": "MIT",
+  "tags": ["backup", "restore", "system"],
+  "requirements": {
+    "python": ">=3.10",
+    "dependencies": ["click", "sqlalchemy", "xxhash"]
+  },
+  "commands": [
+    {
+      "name": "backup",
+      "description": "Create an incremental backup",
+      "parameters": {
+        "scope": {
+          "type": "string",
+          "enum": ["config", "config+session", "config+session+workspace"],
+          "default": "config",
+          "description": "Backup scope to use"
+        },
+        "reason": {
+          "type": "string",
+          "default": "",
+          "description": "Optional reason for the backup"
+        }
+      },
+      "examples": [
+        "/ocbs backup",
+        "/ocbs backup --scope config+session",
+        "/ocbs backup --scope config+session+workspace --reason system update"
+      ]
+    },
+    {
+      "name": "restore",
+      "description": "Restore from a backup or checkpoint",
+      "parameters": {
+        "latest": {
+          "type": "boolean",
+          "default": true,
+          "description": "Restore from the latest backup"
+        },
+        "checkpoint": {
+          "type": "string",
+          "default": null,
+          "description": "Specific checkpoint ID to restore from"
+        },
+        "target": {
+          "type": "string",
+          "default": null,
+          "description": "Target directory for restore (optional)"
+        }
+      },
+      "examples": [
+        "/ocbs restore --latest",
+        "/ocbs restore --checkpoint 20260211_120000_cp",
+        "/ocbs restore --latest --target /tmp/restore"
+      ]
+    },
+    {
+      "name": "status",
+      "description": "Show backup system status",
+      "parameters": {},
+      "examples": ["/ocbs status"]
+    },
+    {
+      "name": "list",
+      "description": "List available backups",
+      "parameters": {
+        "scope": {
+          "type": "string",
+          "default": null,
+          "description": "Optional scope filter"
+        }
+      },
+      "examples": [
+        "/ocbs list",
+        "/ocbs list --scope config"
+      ]
+    },
+    {
+      "name": "clean",
+      "description": "Clean up old backups based on retention policy",
+      "parameters": {
+        "scope": {
+          "type": "string",
+          "default": null,
+          "description": "Optional scope filter"
+        }
+      },
+      "examples": [
+        "/ocbs clean",
+        "/ocbs clean --scope config"
+      ]
+    },
+    {
+      "name": "checkpoint",
+      "description": "Create a checkpoint for auto-restore functionality",
+      "parameters": {
+        "reason": {
+          "type": "string",
+          "description": "Reason for creating the checkpoint"
+        }
+      },
+      "examples": [
+        "/ocbs checkpoint before system update",
+        "/ocbs checkpoint migrating configuration"
+      ]
+    }
+  ],
+  "capabilities": {
+    "cron_support": true,
+    "heartbeat_support": true,
+    "auto_restore": true
+  },
+  "retention_policy": {
+    "daily": 7,
+    "weekly": 4,
+    "monthly": 12
+  }
+}

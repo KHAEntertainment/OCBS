@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocbs"
+version = "0.1.0"
+description = "OpenClaw Backup System - Incremental backup with skill and CLI interface"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0.0",
+    "sqlalchemy>=2.0.0",
+    "xxhash>=3.0.0",
+]
+
+[project.scripts]
+ocbs = "ocbs.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
