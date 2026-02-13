@@ -36,6 +36,11 @@ Once installed as a skill:
 /ocbs list                      # Show available backups
 /ocbs status                    # Show storage status
 /ocbs checkpoint "before update" # Create restore point
+/ocbs checkpoint --serve        # Create checkpoint + serve restore page
+/ocbs setup                     # Interactive wizard for schedules & heartbeat
+/ocbs schedule                  # Manage automated backup schedules
+/ocbs heartbeat                 # Configure health checks and alerts
+/ocbs health                    # Quick backup health check
 ```
 
 ## Features
@@ -44,8 +49,11 @@ Once installed as a skill:
 - **Content-addressable** — SHA-256 deduplication prevents duplicates
 - **Auto-cleanup** — Retains 7 daily, 4 weekly, 12 monthly backups
 - **Checkpoint system** — Manual restore points for risky changes
+- **Human-in-the-loop restore** — Web-based restore page for safe emergency recovery
+- **Automated schedules** — Cron-based backup scheduling with configurable retention
+- **Heartbeat health checks** — Alerts when backups are stale, optional auto-backup
 - **Dual interface** — CLI commands + chat-based skill
-- **Cron/heartbeat ready** — Automated backups and health checks
+- **Wizard mode** — Interactive setup for schedules and heartbeat configuration
 
 ## Installation
 
@@ -70,6 +78,13 @@ python install_skill.py
 | `ocbs status` | Show storage statistics |
 | `ocbs clean` | Remove old backups |
 | `ocbs checkpoint "reason"` | Create checkpoint |
+| `ocbs checkpoint --serve --expires 4h` | Create checkpoint + serve restore page |
+| `ocbs wizard` | Interactive setup wizard |
+| `ocbs schedule wizard` | Schedule configuration wizard |
+| `ocbs heartbeat wizard` | Heartbeat configuration wizard |
+| `ocbs schedule list` | List scheduled backups |
+| `ocbs heartbeat status` | Show heartbeat health status |
+| `ocbs health` | Quick backup health check |
 
 See [docs/setup.md](docs/setup.md) for detailed configuration.
 

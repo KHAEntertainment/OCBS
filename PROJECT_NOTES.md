@@ -44,19 +44,114 @@ File-level incremental using content-addressable chunks:
 - Pack files with SQLite/Lua index
 - Efficient storage, rsync-friendly
 
-## Hands-Off Auto-Restore (Optional Feature)
+## Human-in-the-Loop Restore Page (Recommended)
 
-**Purpose:** Guardian mode for risky changes. If something breaks, system auto-recovers.
+**Purpose:** Safe, accessible emergency restore for risky changes. Human controls the restore decision via a web interface.
 
-**Triggers:**
-1. Gateway doesn't come back online after a change
-2. Gateway comes back but agent is inactive/cannot confirm success
+### Why This Approach?
 
-**Mechanism:**
-- Agent sets a "checkpoint" before making changes
-- Configurable timeout (X minutes)
-- If no successful confirmation → auto-restore to pre-change state
-- Optional — must be explicitly enabled
+- **Safety** — No false positive auto-restores; human decides
+- **Accessibility** — Works from Telegram/WhatsApp without terminal access
+- **Transparency** — Shows exactly what will be restored
+- **Confirmation gate** — Change doesn't proceed until human acknowledges
+- **Simple UX** — Single button click, no CLI knowledge needed
+
+### User Flow
+
+```
+1. Agent: ocbs checkpoint "Before upgrading to 2026.2.7"
+2. Agent: ocbs serve-checkpoint --expires 4h
+3. OCBS: Creates temporary restore page at http://localhost:18789/restore/abc123
+4. OCBS: Sends link via Telegram/WhatsApp to user
+5. User: Opens link, sees backup details, clicks "I received this - proceed"
+6. OCBS: Confirms receipt, tells agent "human approved - proceed with change"
+7. Agent: Makes change, restarts gateway
+8. Scenario A (Success): Gateway comes back → User closes page, done
+   Scenario B (Failure): Things break → User clicks "Restore & Restart"
+9. OCBS: Runs restore from checkpoint, restarts gateway, sends confirmation
+```
+
+### Page Content
+
+```
+┌─────────────────────────────────────────────┐
+│  OCBS Emergency Restore                      │
+├─────────────────────────────────────────────┤
+│  Checkpoint: Before upgrading to 2026.2.7   │
+│  Created: Today at 2:30 PM                  │
+│  Files to restore: OpenClaw config (~2MB)   │
+│                                             │
+│  ⚠️ This will restore your system to the    │
+│     state before the change.                │
+│                                             │
+│  [ I received this - proceed with change ]  │
+│  ──────────────────────── OR ───────────────│
+│  [ 🔴 RESTORE & RESTART GATEWAY ]           │
+│                                             │
+│  Expires in: 3h 42m                         │
+└─────────────────────────────────────────────┘
+```
+
+### Technical Implementation
+
+| Component | Specification |
+|-----------|---------------|
+| **Serving** | Loopback only by default (`localhost:18789`) |
+| **Remote access** | Tailscale serve optional for off-device access |
+| **Expiry** | Default 4 hours, configurable via `--expires` |
+| **Auth** | Token in URL path (`/restore/<token>`) prevents unauthorized access |
+| **One-time use** | Restore button disables after use or expiry |
+| **Gateway restart** | Optional auto-restart after restore, or manual |
+| **Notifications** | Telegram/WhatsApp confirmation on receipt and restore |
+
+### CLI Commands
+
+```bash
+# Create checkpoint + serve restore page
+ocbs checkpoint "before update"
+ocbs serve --checkpoint <id> --expires 4h
+
+# Or combined
+ocbs checkpoint "before update" --serve --expires 4h
+
+# User receives link, clicks through, agent proceeds
+
+# If needed, restore
+ocbs restore --checkpoint <id>
+```
+
+### Chat Commands
+
+```
+/ocbs checkpoint "before update" --serve --expires 4h
+→ Creates checkpoint and serves restore page
+→ Sends link to user
+→ Agent waits for "proceed" confirmation
+
+/ocbs status
+→ Shows checkpoint status and active restore pages
+```
+
+### Advantages Over Fully Automated
+
+| Fully Automated | Human-in-the-Loop (Chosen) |
+|-----------------|---------------------------|
+| Risk of false positives | Human decision = no false restores |
+| Complex timeout logic | Simple receipt/confirmation flow |
+| User may not know it happened | User sees everything, in control |
+| Hard to access from mobile chat | Web page works everywhere |
+| May restore when user doesn't want to | Human explicitly clicks restore |
+
+### Future: Fully Automated (Optional Add-on)
+
+After the human-in-the-loop approach is stable, a fully automated mode could be added:
+
+- Tiny LLM check: "Is gateway responding? Are there error logs?"
+- Auto-restore only on clear failure signatures
+- Still notifies human after restore
+- Configurable: `auto-restore: true/false`
+
+This would be an **advanced option**, not the default.
 
 ## Skill Interface (Chat Commands)
 
@@ -109,19 +204,20 @@ When community adoption takes hold:
 - [x] Incremental level: File-level
 - [x] Restore interface: Both skill AND command-based
 - [x] Backup scopes: Config only, config+session, config+session+workspace
+- [x] Restore approach: Human-in-the-loop web page (not fully automated)
+- [x] Restore page serves on loopback by default (Tailscale optional for remote)
 
 ### Pending
 - [ ] Incremental format: Content-addressable chunks vs tar+index?
 - [ ] Retention policy: How many increments to keep per scope?
 - [ ] Package format: NPM or UV?
-- [ ] Auto-restore checkpoint mechanism details
 - [ ] Remote backup support? (deferred to future)
 - [ ] Cloud provider integration (S3, B2, etc.)
 
 ---
 
 *Created: 2026-02-11*
-*Updated: 2026-02-11*
+*Updated: 2026-02-12*
 
 ## Build Log
 
@@ -171,31 +267,36 @@ ocbs status
 python install_skill.py
 ```
 
-### Status: ✅ Ready for Testing
+### Status: ✅ Ready for Testing (with cron/heartbeat & restore page pending implementation)
 
 ---
 
 ## Roadmap (Post-MVP)
 
-### Phase 1: Publishing
+### Phase 1: Human-in-the-Loop Restore Page
+- [ ] Web server for serving restore pages (`ocbs serve`)
+- [ ] Token-based authentication in URL paths
+- [ ] Interactive page with receipt confirmation and restore button
+- [ ] Integration with Telegram/WhatsApp for link delivery
+- [ ] Expiry management and one-time-use enforcement
+- [ ] CLI: `ocbs checkpoint --serve --expires`
+- [ ] Chat: `/ocbs checkpoint --serve`
+- [ ] Tests for serve, page rendering, restore flow
+
+### Phase 2: Publishing
 - [ ] Publish to UV (PyPI)
 - [ ] Publish skill to ClawHub
 - [ ] Update documentation for package-based install
 - [ ] Add GitHub Project with public roadmap
 
-### Phase 2: Remote Backup
+### Phase 3: Remote Backup
 - [ ] Cloud provider integrations (S3, B2, Google Cloud Storage)
 - [ ] Remote backup push/pull commands
 - [ ] Configurable remote retention policies
 - [ ] Encrypted remote transfers
 
-### Phase 3: Remote Restore & Webhooks
-- [ ] Webhook triggers for backup/restore events
-- [ ] Remote restore via API/webhook
-- [ ] Cross-device backup sync
-- [ ] Real-time backup status notifications
-
-### Phase 4: Enhanced Features
+### Phase 4: Advanced Features
+- [ ] Fully automated restore (LLM-based health check, optional)
 - [ ] Selective file restore (pick files from backup)
 - [ ] Backup verification/checksum validation
 - [ ] Backup comparison (diff between two backups)
