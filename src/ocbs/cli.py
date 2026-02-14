@@ -143,5 +143,14 @@ def checkpoint(ctx, reason):
         sys.exit(1)
 
 
+# Import serve commands
+from .serve_cli import serve, status as serve_status, revoke as serve_revoke
+
+# Add serve commands
+main.add_command(serve, 'serve')
+main.add_command(serve_status, 'serve-status')
+main.add_command(serve_revoke, 'serve-revoke')
+
+
 if __name__ == '__main__':
     main()

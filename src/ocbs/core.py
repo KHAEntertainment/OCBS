@@ -499,3 +499,81 @@ class OCBSCore:
                 }
                 for row in cursor.fetchall()
             ]
+    
+    def get_checkpoint(self, checkpoint_id: str) -> Optional[dict]:
+        """Get a specific checkpoint."""
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            cursor = conn.execute(
+                """SELECT checkpoint_id, backup_id, reason, timestamp, active
+                   FROM checkpoints WHERE checkpoint_id = ?""",
+                (checkpoint_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return {
+                    'checkpoint_id': row[0],
+                    'backup_id': row[1],
+                    'reason': row[2],
+                    'timestamp': row[3],
+                    'active': bool(row[4])
+                }
+        return None
+    
+    def add_checkpoint_serve_info(self, checkpoint_id: str, token: str, expires_at: str) -> bool:
+        """Add serve endpoint reference to a checkpoint record."""
+        # Create serve_records table if not exists
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS serve_records (
+                    token TEXT PRIMARY KEY,
+                    checkpoint_id TEXT,
+                    created_at TEXT,
+                    expires_at TEXT,
+                    used INTEGER DEFAULT 0,
+                    proceeded INTEGER DEFAULT 0,
+                    restored INTEGER DEFAULT 0,
+                    FOREIGN KEY (checkpoint_id) REFERENCES checkpoints(checkpoint_id)
+                )
+            """)
+            
+            # Check if token already exists
+            cursor = conn.execute(
+                "SELECT token FROM serve_records WHERE token = ?",
+                (token,)
+            )
+            if cursor.fetchone():
+                return False
+            
+            conn.execute(
+                """INSERT INTO serve_records (token, checkpoint_id, created_at, expires_at)
+                   VALUES (?, ?, ?, ?)""",
+                (token, checkpoint_id, datetime.now().isoformat(), expires_at)
+            )
+            return True
+    
+    def get_checkpoint_serves(self, checkpoint_id: str) -> list[dict]:
+        """Get all serve records for a checkpoint."""
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            cursor = conn.execute(
+                """SELECT token, checkpoint_id, created_at, expires_at, used, proceeded, restored
+                   FROM serve_records WHERE checkpoint_id = ? ORDER BY created_at DESC""",
+                (checkpoint_id,)
+            )
+            return [
+                {
+                    'token': row[0],
+                    'checkpoint_id': row[1],
+                    'created_at': row[2],
+                    'expires_at': row[3],
+                    'used': bool(row[4]),
+                    'proceeded': bool(row[5]),
+                    'restored': bool(row[6])
+                }
+                for row in cursor.fetchall()
+            ]
