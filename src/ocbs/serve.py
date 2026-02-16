@@ -4,6 +4,7 @@ Web server for serving OCBS restore pages with token-based authentication.
 
 import hashlib
 import json
+import os
 import secrets
 import sqlite3
 import threading
@@ -13,13 +14,13 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
-from .core import OCBSCore
+from core import OCBSCore
 
 
 class RestorePageServer:
     """HTTP server for serving restore pages with token authentication."""
     
-    def __init__(self, state_dir: Optional[Path] = None, port: int = 18789, host: str = "localhost"):
+    def __init__(self, state_dir: Optional[Path] = None, port: int = 18790, host: str = "localhost"):
         self.port = port
         self.host = host
         self.core = OCBSCore(state_dir=state_dir)
@@ -149,7 +150,7 @@ class RestorePageServer:
             }
     
     def _mark_proceeded(self, token: str):
-        """Mark a token as proceeded."""
+        """Mark a token as proceeded and send webhook notification."""
         with sqlite3.connect(self.core.db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
@@ -157,6 +158,87 @@ class RestorePageServer:
                 "UPDATE serve_records SET proceeded = 1 WHERE token = ?",
                 (token,)
             )
+        
+        # Send webhook notification to gateway
+        self._send_webhook_notification(token)
+    
+    def _write_proceed_notification(self, token: str, checkpoint_id: str = None):
+        """Write a notification file when user clicks 'I received this'."""
+        import os
+        from datetime import datetime
+        
+        # Create notification directory
+        notify_dir = Path.home() / ".config" / "ocbs" / "proceed_notifications"
+        notify_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Write notification file with timestamp
+        notify_file = notify_dir / f"{token}.json"
+        notification = {
+            "token": token,
+            "checkpoint_id": checkpoint_id,
+            "proceeded_at": datetime.now().isoformat(),
+            "status": "pending_agent_poll"
+        }
+        
+        with open(notify_file, 'w') as f:
+            json.dump(notification, f)
+    
+    def _send_webhook_notification(self, token: str, checkpoint_id: str = None):
+        """Send webhook notification to gateway when user clicks proceed."""
+        import urllib.request
+        import urllib.error
+        
+        # Get webhook URL from environment or use default
+        webhook_url = os.environ.get('OCBS_WEBHOOK_URL', 'http://localhost:18789/hooks/ocbs-proceed')
+        webhook_token = os.environ.get('OCBS_WEBHOOK_TOKEN', 'ocbs-webhook-secret')
+        
+        payload = json.dumps({
+            "message": f"OCBS Proceed: User acknowledged checkpoint {checkpoint_id}. Token: {token}",
+            "token": token,
+            "checkpoint_id": checkpoint_id,
+            "action": "proceed"
+        }).encode('utf-8')
+        
+        req = urllib.request.Request(
+            webhook_url,
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {webhook_token}'
+            },
+            method='POST'
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                print(f"Webhook notification sent: {response.status}")
+        except urllib.error.URLError as e:
+            print(f"Webhook notification failed: {e}")
+            # Fall back to file notification
+            self._write_proceed_notification(token, checkpoint_id)
+    
+    def get_pending_proceed_notifications(self) -> list[dict]:
+        """Get all pending proceed notifications (for agent polling)."""
+        notify_dir = Path.home() / ".config" / "ocbs" / "proceed_notifications"
+        if not notify_dir.exists():
+            return []
+        
+        notifications = []
+        for f in notify_dir.glob("*.json"):
+            try:
+                with open(f, 'r') as nf:
+                    notifications.append(json.load(nf))
+            except (json.JSONDecodeError, IOError):
+                continue
+        
+        return notifications
+    
+    def clear_proceed_notification(self, token: str):
+        """Clear a proceed notification after agent has processed it."""
+        notify_dir = Path.home() / ".config" / "ocbs" / "proceed_notifications"
+        notify_file = notify_dir / f"{token}.json"
+        if notify_file.exists():
+            notify_file.unlink()
     
     def _mark_used(self, token: str):
         """Mark a token as used (restore button clicked)."""
@@ -243,8 +325,10 @@ class RestorePageServer:
         checkpoint_timestamp = datetime.fromisoformat(checkpoint_info['checkpoint_timestamp'])
         
         status_message = ""
-        button_disabled = ""
-        button_class = "btn-primary"
+        step1_button_class = "btn-step"
+        step1_button_text = "Step 1: I received this - start changes"
+        step1_button_disabled = ""
+        work_underway_display = "none"
         
         if is_restored:
             status_message = """
@@ -254,8 +338,8 @@ class RestorePageServer:
                 The gateway should restart automatically.
             </div>
             """
-            button_disabled = "disabled"
-            button_class = "btn-disabled"
+            step1_button_disabled = "disabled"
+            step1_button_class = "btn-disabled"
         elif is_used or is_expired:
             status_message = """
             <div class="alert alert-warning">
@@ -263,17 +347,18 @@ class RestorePageServer:
                 Please request a new link from your agent.
             </div>
             """
-            button_disabled = "disabled"
-            button_class = "btn-disabled"
+            step1_button_disabled = "disabled"
+            step1_button_class = "btn-disabled"
         elif is_proceeded:
             status_message = """
             <div class="alert alert-info">
-                <strong>✓ Acknowledged!</strong><br>
+                <strong>✓ Work underway!</strong><br>
                 The agent has been notified that you received this link.
-                You may proceed with the change. If things go wrong, 
-                come back and click the restore button.
+                If things go wrong, use the restore options below.
             </div>
             """
+            step1_button_text = "✅ Work underway"
+            work_underway_display = "block"
         
         return f"""<!DOCTYPE html>
 <html lang="en">
@@ -353,11 +438,28 @@ class RestorePageServer:
             background: #0b5ed7;
             transform: translateY(-2px);
         }}
+        .btn-step {{
+            background: #198754;
+            color: white;
+            font-size: 17px;
+        }}
+        .btn-step:hover:not(:disabled) {{
+            background: #157347;
+            transform: translateY(-2px);
+        }}
+        .btn-restart {{
+            background: #6c757d;
+            color: white;
+        }}
+        .btn-restart:hover:not(:disabled) {{
+            background: #5a6268;
+            transform: translateY(-2px);
+        }}
         .btn-danger {{
             background: #dc3545;
             color: white;
-            font-size: 18px;
-            padding: 20px;
+            font-size: 17px;
+            padding: 18px;
         }}
         .btn-danger:hover:not(:disabled) {{
             background: #c82333;
@@ -372,19 +474,15 @@ class RestorePageServer:
             cursor: not-allowed;
             opacity: 0.6;
         }}
-        .divider {{
-            display: flex;
-            align-items: center;
-            margin: 24px 0;
-            color: #999;
+        .restore-section {{
+            margin-top: 8px;
         }}
-        .divider::before, .divider::after {{
-            content: '';
-            flex: 1;
-            height: 1px;
-            background: #ddd;
+        .restore-section-text {{
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 12px;
+            text-align: center;
         }}
-        .divider span {{ padding: 0 16px; }}
         .alert {{
             padding: 16px;
             border-radius: 8px;
@@ -411,6 +509,26 @@ class RestorePageServer:
         }}
         @keyframes spin {{
             to {{ transform: rotate(360deg); }}
+        }}
+        .work-timer {{
+            display: {work_underway_display};
+            text-align: center;
+            color: #0d6efd;
+            font-size: 14px;
+            margin-top: 8px;
+            font-weight: 500;
+        }}
+        .step-label {{
+            display: inline-block;
+            background: #0d6efd;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-right: 8px;
+        }}
+        .step-label.step2 {{
+            background: #dc3545;
         }}
     </style>
 </head>
@@ -439,33 +557,96 @@ class RestorePageServer:
         
         <div class="warning">
             ⚠️ This will restore your system to the state before the change.
-            Only click the restore button if something went wrong!
+            Only use the restore options below if something goes wrong!
         </div>
         
         {status_message}
         
-        <form action="/proceed" method="POST">
+        <form id="proceed-form" action="/proceed" method="POST">
             <input type="hidden" name="token" value="{token}">
-            <button type="submit" class="btn btn-primary" {button_disabled}>
-                ✓ I received this - proceed with change
+            <button type="submit" class="btn {step1_button_class}" {step1_button_disabled} id="step1-btn">
+                {step1_button_text}
             </button>
         </form>
         
-        <div class="divider"><span>OR</span></div>
+        <div class="work-timer" id="work-timer">
+            ⏱️ Work underway for: <span id="elapsed">0:00</span>
+        </div>
         
-        <form action="/restore" method="POST">
-            <input type="hidden" name="token" value="{token}">
-            <button type="submit" class="btn btn-danger" {button_disabled} 
-                    onclick="return confirm('Are you sure you want to RESTORE? This will revert changes!');">
-                🔴 RESTORE & RESTART GATEWAY
-                <span class="spinner" id="restore-spinner"></span>
-            </button>
-        </form>
+        <div class="restore-section">
+            <p class="restore-section-text">
+                If anything goes wrong, you can restore:
+            </p>
+            
+            <form action="/restart" method="POST">
+                <input type="hidden" name="token" value="{token}">
+                <button type="submit" class="btn btn-restart" {step1_button_disabled}
+                        onclick="return confirm('Restart the gateway without restoring? This may help resolve minor issues.');">
+                    🔄 Restart Gateway
+                </button>
+            </form>
+            
+            <form action="/restore" method="POST">
+                <input type="hidden" name="token" value="{token}">
+                <button type="submit" class="btn btn-danger" {step1_button_disabled} 
+                        onclick="return confirm('Are you sure you want to RESTORE? This will revert all changes!');">
+                    <span class="step-label step2">Step 2</span>
+                    🔴 Restore Backup & Restart
+                    <span class="spinner" id="restore-spinner"></span>
+                </button>
+            </form>
+        </div>
         
         <p class="expiry">Link expires in {hours}h {minutes}m</p>
     </div>
     
     <script>
+        // Handle proceed form submission with AJAX
+        document.getElementById('proceed-form').addEventListener('submit', function(e) {{
+            e.preventDefault();
+            
+            const form = this;
+            const btn = document.getElementById('step1-btn');
+            const token = form.token.value;
+            
+            // Change button to show work underway
+            btn.innerHTML = '✅ Work underway';
+            btn.disabled = true;
+            document.getElementById('work-timer').style.display = 'block';
+            
+            // Start elapsed timer
+            let seconds = 0;
+            const timerEl = document.getElementById('elapsed');
+            setInterval(function() {{
+                seconds++;
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                timerEl.textContent = mins + ':' + (secs < 10 ? '0' : '') + secs;
+            }}, 1000);
+            
+            // Submit via fetch
+            fetch('/proceed', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+                body: 'token=' + encodeURIComponent(token)
+            }})
+            .then(response => response.text())
+            .then(html => {{
+                // Parse the response and update the status
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const alertDiv = doc.querySelector('.alert');
+                if (alertDiv) {{
+                    const currentAlert = document.querySelector('.alert');
+                    if (currentAlert) {{
+                        currentAlert.innerHTML = alertDiv.innerHTML;
+                    }}
+                }}
+            }})
+            .catch(err => console.error('Error:', err));
+        }});
+        
+        // Handle restore form
         document.querySelector('form[action="/restore"]').addEventListener('submit', function(e) {{
             if (!confirm('Are you sure? This will restore from the checkpoint.')) {{
                 e.preventDefault();
@@ -537,18 +718,66 @@ class RestorePageServer:
                             key, value = pair.split('=', 1)
                             params[key] = value
                     
-                    token = params                    
                     token = params.get('token')
                     if token:
+                        # Mark as proceeded in DB
                         server_instance._mark_proceeded(token)
                         
-                        # In a real implementation, this would notify the agent
-                        # For now, we just mark it as proceeded
+                        # Get the checkpoint_id for notification
+                        serve_record = server_instance._validate_token(token)
+                        checkpoint_id = serve_record['checkpoint_id'] if serve_record else None
+                        
+                        # Write notification file to notify agent
+                        server_instance._write_proceed_notification(token, checkpoint_id)
+                        
+                        # Return styled HTML that updates UI via JavaScript
+                        proceed_status_html = """
+                        <div class="alert alert-info">
+                            <strong>✓ Work underway!</strong><br>
+                            The agent has been notified that you received this link.
+                            If things go wrong, use the restore options below.
+                        </div>
+                        """
+                        response_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCBS - Proceed Acknowledged</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+               min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }}
+        .container {{ background: white; border-radius: 16px; padding: 40px; max-width: 500px; width: 100%; 
+                     box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }}
+        h1 {{ color: #198754; margin-bottom: 16px; }}
+        p {{ color: #666; margin-bottom: 24px; }}
+        .alert {{ padding: 16px; border-radius: 8px; margin: 20px 0; background: #cce5ff; color: #004085; text-align: left; }}
+        .btn {{ padding: 12px 24px; background: #0d6efd; color: white; border: none; border-radius: 8px; 
+               font-size: 16px; cursor: pointer; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✓ Work Underway</h1>
+        <p>The agent has been notified. You may proceed with your changes.</p>
+        {proceed_status_html}
+        <button class="btn" onclick="window.close()">Close This Tab</button>
+    </div>
+    <script>
+        // Try to update parent window and close popup if opened as separate window
+        if (window.opener) {{
+            try {{
+                window.opener.location.reload();
+            }} catch(e) {{}}
+        }}
+    </script>
+</body>
+</html>"""
                         self.send_response(200)
                         self.send_header('Content-Type', 'text/html')
                         self.end_headers()
-                        response = b"<html><body><h1>Acknowledged!</h1><p>The agent has been notified. You may proceed with the change.</p></body></html>"
-                        self.wfile.write(response)
+                        self.wfile.write(response_html.encode())
                     else:
                         self.send_error(400, "Missing token")
                 
@@ -581,6 +810,86 @@ class RestorePageServer:
                                 return
                         
                         self.send_error(404, "Invalid token")
+                    else:
+                        self.send_error(400, "Missing token")
+                
+                elif self.path == '/restart':
+                    # Non-destructive restart - just restart gateway without restore
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(content_length).decode()
+                    
+                    # Parse form data
+                    params = {}
+                    for pair in body.split('&'):
+                        if '=' in pair:
+                            key, value = pair.split('=', 1)
+                            params[key] = value
+                    
+                    token = params.get('token')
+                    if token:
+                        # Validate token
+                        serve_record = server_instance._validate_token(token)
+                        if not serve_record:
+                            self.send_error(404, "Invalid or expired token")
+                            return
+                        
+                        # Try to restart the gateway gracefully
+                        try:
+                            import subprocess
+                            # Check if we can use systemctl
+                            result = subprocess.run(
+                                ['which', 'systemctl'],
+                                capture_output=True,
+                                text=True
+                            )
+                            if result.returncode == 0:
+                                # Use systemctl to restart
+                                subprocess.Popen(
+                                    ['systemctl', 'restart', 'openclaw-gateway'],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL
+                                )
+                            else:
+                                # Try openclaw CLI
+                                subprocess.Popen(
+                                    ['openclaw', 'gateway', 'restart'],
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL
+                                )
+                        except Exception as e:
+                            # If restart fails, just show a message
+                            pass
+                        
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html')
+                        self.end_headers()
+                        restart_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCBS - Restarting</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+               min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
+        .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; width: 100%; 
+                     box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }
+        h1 { color: #6c757d; margin-bottom: 16px; }
+        p { color: #666; margin-bottom: 24px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔄 Restarting Gateway...</h1>
+        <p>The gateway is restarting. Please wait a moment and then refresh the page.</p>
+    </div>
+    <script>
+        setTimeout(function() { window.location.reload(); }, 5000);
+    </script>
+</body>
+</html>"""
+                        self.wfile.write(restart_html.encode())
                     else:
                         self.send_error(400, "Missing token")
                 else:

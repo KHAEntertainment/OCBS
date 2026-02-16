@@ -23,8 +23,8 @@ import asyncio
 from datetime import timedelta
 from pathlib import Path
 
-from .core import OCBSCore, BackupScope
-from .serve import RestorePageServer
+from core import OCBSCore, BackupScope
+from serve import RestorePageServer
 
 
 class OCBSBackupSkill:
@@ -157,7 +157,7 @@ class OCBSBackupSkill:
                 
                 # Start server in background
                 import threading
-                server_thread = threading.Thread(target=self.serve_server.start, daemon=True)
+                server_thread = threading.Thread(target=self.serve_server.start)
                 server_thread.start()
                 
                 return (f"Checkpoint created: {checkpoint_id}\n"
@@ -194,7 +194,7 @@ class OCBSBackupSkill:
             
             # Start server in background
             import threading
-            server_thread = threading.Thread(target=self.serve_server.start, daemon=True)
+            server_thread = threading.Thread(target=self.serve_server.start)
             server_thread.start()
             
             return (f"Restore page created for checkpoint: {checkpoint}\n"
@@ -222,11 +222,43 @@ class OCBSBackupSkill:
                     return float(expires[:-1]) * mult
                 except ValueError:
                     return 0
-        
+
         try:
             return float(expires)
         except ValueError:
             return 0
+
+    async def poll_proceed_notifications(self, clear: bool = True) -> str:
+        """Poll for proceed notifications from restore pages.
+
+        Agents should call this periodically to check if the user has
+        clicked "I received this" on any restore pages.
+
+        Args:
+            clear: If True, clear the notification files after reading (default)
+
+        Returns:
+            List of pending proceed notifications or empty string
+        """
+        if not self.serve_server:
+            return "No active serve server"
+
+        notifications = self.serve_server.get_pending_proceed_notifications()
+
+        if not notifications:
+            return "No pending proceed notifications"
+
+        result_lines = [f"Pending proceed notifications ({len(notifications)}):"]
+        for notif in notifications:
+            result_lines.append(f"  Token: {notif['token'][:16]}...")
+            result_lines.append(f"    Checkpoint: {notif['checkpoint_id']}")
+            result_lines.append(f"    Proceeded at: {notif['proceeded_at']}")
+
+        if clear:
+            for notif in notifications:
+                self.serve_server.clear_proceed_notification(notif['token'])
+
+        return "\n".join(result_lines)
 
 
 # Skill manifest for OpenClaw skill system
@@ -240,7 +272,7 @@ SKILL_MANIFEST = {
             "parameters": {
                 "scope": {
                     "type": "string",
-                    "enum": ["config", "config+session", "config+session+workspace"],
+                    "enum": ["minimal", "config", "config+session", "config+session+workspace"],
                     "default": "config",
                     "description": "Backup scope"
                 },
@@ -335,6 +367,16 @@ SKILL_MANIFEST = {
                     "type": "string",
                     "default": "localhost",
                     "description": "Host for restore URL (use Tailscale IP for remote access)"
+                }
+            }
+        },
+        "poll-proceed": {
+            "description": "Poll for proceed notifications from restore pages",
+            "parameters": {
+                "clear": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Clear notifications after reading"
                 }
             }
         }

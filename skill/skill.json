@@ -101,11 +101,51 @@
         "reason": {
           "type": "string",
           "description": "Reason for creating the checkpoint"
+        },
+        "serve": {
+          "type": "boolean",
+          "default": false,
+          "description": "Create a restore page for this checkpoint"
+        },
+        "expires": {
+          "type": "string",
+          "default": "4h",
+          "description": "Link expiry time (e.g., 4h, 1d)"
+        },
+        "host": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Host for the restore URL (use Tailscale IP for remote access)"
         }
       },
       "examples": [
         "/ocbs checkpoint before system update",
-        "/ocbs checkpoint migrating configuration"
+        "/ocbs checkpoint migrating configuration",
+        "/ocbs checkpoint before update --serve --expires 4h --host 100.x.x.x"
+      ]
+    },
+    {
+      "name": "serve",
+      "description": "Serve a restore page for an existing checkpoint",
+      "parameters": {
+        "checkpoint": {
+          "type": "string",
+          "description": "Checkpoint ID to serve"
+        },
+        "expires": {
+          "type": "string",
+          "default": "4h",
+          "description": "Link expiry time (e.g., 4h, 1d)"
+        },
+        "host": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Host for the restore URL (use Tailscale IP for remote access)"
+        }
+      },
+      "examples": [
+        "/ocbs serve --checkpoint 20260215_120000_cp",
+        "/ocbs serve --checkpoint <id> --expires 4h --host 100.x.x.x"
       ]
     }
   ],

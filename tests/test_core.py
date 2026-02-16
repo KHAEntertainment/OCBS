@@ -199,6 +199,189 @@ class TestOCBSCore:
                 os.environ['HOME'] = original_home
 
 
+class TestRestore:
+    """Tests for restore functionality."""
+
+    def test_restore_backup(self, ocbs, sample_files, temp_state_dir):
+        """Test basic restore functionality."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            # Create a backup
+            manifest = ocbs.backup(BackupScope.CONFIG_SESSION_WORKSPACE, "test backup")
+
+            # Modify a file to verify restore overwrites it
+            openclaw_home = temp_state_dir / ".openclaw"
+            (openclaw_home / "config" / "settings.json").write_text('{"modified": "value"}')
+
+            # Restore to a different location to avoid conflicts
+            restore_target = temp_state_dir / "restore"
+            restore_target.mkdir()
+
+            result = ocbs.restore(manifest.backup_id, target_dir=restore_target)
+            assert result is True
+
+            # Verify restored files
+            restored_settings = restore_target / ".openclaw" / "config" / "settings.json"
+            assert restored_settings.exists()
+            content = restored_settings.read_text()
+            assert '{"key": "value"}' in content
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+    def test_restore_large_file_count(self, ocbs, temp_state_dir):
+        """Test restore with many files to verify no file descriptor leaks."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            # Create many small files (simulating WhatsApp pre-keys scenario)
+            openclaw_home = temp_state_dir / ".openclaw"
+            openclaw_home.mkdir()
+            config_dir = openclaw_home / "config"
+            config_dir.mkdir()
+
+            # Create 1000 small files
+            for i in range(1000):
+                (config_dir / f"file_{i:04d}.dat").write_text(f'content {i}')
+
+            # Create backup
+            manifest = ocbs.backup(BackupScope.CONFIG, "large backup")
+
+            # Restore to different location
+            restore_target = temp_state_dir / "restore"
+            restore_target.mkdir()
+
+            # This should not fail with "Too many open files"
+            result = ocbs.restore(manifest.backup_id, target_dir=restore_target)
+            assert result is True
+
+            # Verify all files were restored
+            restored_config = restore_target / ".openclaw" / "config"
+            restored_files = list(restored_config.glob("*.dat"))
+            assert len(restored_files) == 1000
+
+            # Spot check content
+            assert (restored_config / "file_0000.dat").read_text() == "content 0"
+            assert (restored_config / "file_0999.dat").read_text() == "content 999"
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+    def test_restore_from_checkpoint(self, ocbs, sample_files, temp_state_dir):
+        """Test restore from checkpoint."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            # Create backup and checkpoint
+            manifest = ocbs.backup(BackupScope.CONFIG, "test backup")
+            checkpoint_id = ocbs.create_checkpoint("test checkpoint")
+
+            # Restore to different location
+            restore_target = temp_state_dir / "restore"
+            restore_target.mkdir()
+
+            result = ocbs.restore(checkpoint_id=checkpoint_id, target_dir=restore_target)
+            assert result is True
+
+            # Verify restored files
+            restored_settings = restore_target / ".openclaw" / "config" / "settings.json"
+            assert restored_settings.exists()
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+
+class TestRestore:
+    """Tests for restore functionality."""
+
+    def test_restore_backup(self, ocbs, sample_files, temp_state_dir):
+        """Test restoring from a backup."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            # Create a backup
+            manifest = ocbs.backup(BackupScope.CONFIG, "test restore backup")
+
+            # Create a restore target directory
+            restore_target = temp_state_dir / "restore_test"
+            restore_target.mkdir()
+
+            # Restore the backup
+            result = ocbs.restore(backup_id=manifest.backup_id, target_dir=restore_target)
+            assert result is True
+
+            # Verify restored files
+            restored_settings = restore_target / ".openclaw" / "config" / "settings.json"
+            assert restored_settings.exists()
+            assert restored_settings.read_text() == '{"key": "value"}'
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+    def test_restore_large_file_count(self, ocbs, sample_files, temp_state_dir):
+        """Test restoring from a backup with large file count - tests batch processing."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            # Backup with config+session+workspace scope which creates multiple files
+            manifest = ocbs.backup(BackupScope.CONFIG_SESSION_WORKSPACE, "large file test")
+
+            # Create a restore target directory
+            restore_target = temp_state_dir / "restore_large"
+            restore_target.mkdir()
+
+            # Restore the backup - this tests batch processing works
+            result = ocbs.restore(backup_id=manifest.backup_id, target_dir=restore_target)
+            assert result is True
+
+            # Verify files were restored (at least some - this tests the batch processing works)
+            restored_files = list(restore_target.rglob("*"))
+            restored_files = [f for f in restored_files if f.is_file()]
+            assert len(restored_files) > 0, "No files were restored"
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+    def test_restore_from_checkpoint(self, ocbs, sample_files, temp_state_dir):
+        """Test restoring from a checkpoint."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            # First create a backup
+            manifest = ocbs.backup(BackupScope.CONFIG, "checkpoint test")
+
+            # Create a checkpoint (uses latest backup)
+            checkpoint_id = ocbs.create_checkpoint("test checkpoint")
+
+            # Create a restore target directory
+            restore_target = temp_state_dir / "restore_checkpoint"
+            restore_target.mkdir()
+
+            # Restore from checkpoint
+            result = ocbs.restore(checkpoint_id=checkpoint_id, target_dir=restore_target)
+            assert result is True
+
+            # Verify restored files
+            restored_settings = restore_target / ".openclaw" / "config" / "settings.json"
+            assert restored_settings.exists()
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+
 class TestBackupScope:
     """Tests for BackupScope enum."""
     

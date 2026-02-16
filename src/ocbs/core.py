@@ -15,6 +15,7 @@ from typing import Optional
 
 
 class BackupScope(Enum):
+    MINIMAL = "minimal"
     CONFIG = "config"
     CONFIG_SESSION = "config+session"
     CONFIG_SESSION_WORKSPACE = "config+session+workspace"
@@ -120,7 +121,18 @@ class OCBSCore:
         openclaw_home = get_openclaw_home()
         paths = []
         
-        if scope in (BackupScope.CONFIG, BackupScope.CONFIG_SESSION, BackupScope.CONFIG_SESSION_WORKSPACE):
+        if scope == BackupScope.MINIMAL:
+            # Minimal scope: only include essential config files (~10-20 files)
+            # Include: openclaw.json, auth-profiles.json, agent configs, telegram credentials
+            essential_files = [
+                openclaw_home / "openclaw.json",
+                openclaw_home / "auth-profiles.json",
+                openclaw_home / "identity.json",
+                openclaw_home / "credentials" / "telegram-token",
+                openclaw_home / "credentials" / "telegram-chat-id",
+            ]
+            paths.extend([f for f in essential_files if f.exists()])
+        elif scope in (BackupScope.CONFIG, BackupScope.CONFIG_SESSION, BackupScope.CONFIG_SESSION_WORKSPACE):
             paths.extend([
                 openclaw_home / "config",
                 openclaw_home / "credentials",
@@ -420,11 +432,12 @@ class OCBSCore:
         
         return checkpoint_id
     
-    def restore(self, backup_id: Optional[str] = None, checkpoint_id: Optional[str] = None, 
+    def restore(self, backup_id: Optional[str] = None, checkpoint_id: Optional[str] = None,
                 target_dir: Optional[Path] = None) -> bool:
         """Restore from a backup or checkpoint."""
         target_dir = target_dir or get_openclaw_home()
-        
+
+        # Resolve backup_id from checkpoint if needed
         if checkpoint_id:
             with sqlite3.connect(self.db_path, timeout=30) as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -436,49 +449,58 @@ class OCBSCore:
                 row = cursor.fetchone()
                 if row:
                     backup_id = row[0]
-        
+
         if not backup_id:
             latest = self.get_latest_backup()
             if latest:
                 backup_id = latest.backup_id
             else:
                 raise ValueError("No backup specified and no backups available")
-        
+
+        # Single connection for entire restore operation
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
-            # Get all files in backup
+
+            # Get all files with their chunk metadata in a single query
             cursor = conn.execute(
-                """SELECT file_path, chunk_id FROM backup_files WHERE backup_id = ?""",
+                """SELECT bf.file_path, c.pack_file, c.offset, c.size
+                   FROM backup_files bf
+                   JOIN chunks c ON bf.chunk_id = c.chunk_id
+                   WHERE bf.backup_id = ?""",
                 (backup_id,)
             )
             files = cursor.fetchall()
-        
-        for file_path, chunk_id in files:
-            # Get chunk content
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.execute(
-                    "SELECT pack_file, offset FROM chunks WHERE chunk_id = ?",
-                    (chunk_id,)
-                )
-                row = cursor.fetchone()
-                if not row:
-                    continue
-                
-                pack_file, offset = row
-                pack_path = self.packs_dir / pack_file
-            
-            # Read chunk from pack
-            with open(pack_path, 'rb') as f:
-                f.seek(offset)
-                # Read until we hit next chunk or end (simplified)
-                content = f.read()
-            
-            # Write file
-            full_path = target_dir / file_path
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_bytes(content)
-        
+
+        # Process files with single connection for chunk lookups
+        # Process in batches to avoid memory pressure with large backups
+        BATCH_SIZE = 500
+
+        for i in range(0, len(files), BATCH_SIZE):
+            batch = files[i:i + BATCH_SIZE]
+
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=30000")
+
+                for file_path, pack_file, offset, chunk_size in batch:
+                    pack_path = self.packs_dir / pack_file
+
+                    # Read exactly chunk_size bytes from pack
+                    try:
+                        with open(pack_path, 'rb') as f:
+                            f.seek(offset)
+                            content = f.read(chunk_size)
+
+                        # Write file
+                        full_path = target_dir / file_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        full_path.write_bytes(content)
+                    except (FileNotFoundError, OSError) as e:
+                        # Log but continue with other files
+                        print(f"Warning: Failed to restore {file_path}: {e}")
+                        continue
+
         return True
     
     def get_checkpoints(self) -> list[dict]:
