@@ -1,13 +1,12 @@
 """Tests for OCBS serve functionality."""
 
 import pytest
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from src.ocbs.core import OCBSCore, BackupScope
-from src.ocbs.serve import RestorePageServer
+from ocbs.core import OCBSCore, BackupScope
+from ocbs.serve import RestorePageServer
 
 
 @pytest.fixture
@@ -84,9 +83,9 @@ class TestRestorePageServer:
         
         assert record is not None
         assert record['checkpoint_id'] == checkpoint_id
-        assert record['used'] == False
-        assert record['proceeded'] == False
-        assert record['restored'] == False
+        assert not record['used']
+        assert not record['proceeded']
+        assert not record['restored']
     
     def test_validate_invalid_token(self, server):
         """Test validation of invalid token."""
@@ -116,7 +115,7 @@ class TestRestorePageServer:
         server._mark_proceeded(token)
         
         record = server._validate_token(token)
-        assert record['proceeded'] == True
+        assert record['proceeded'] is True
     
     def test_mark_used(self, server, core):
         """Test marking token as used."""
@@ -127,7 +126,7 @@ class TestRestorePageServer:
         server._mark_used(token)
         
         record = server._validate_token(token)
-        assert record['used'] == True
+        assert record['used'] is True
     
     def test_get_checkpoint_info(self, server, core):
         """Test getting checkpoint info."""
@@ -225,15 +224,15 @@ class TestServeIntegration:
         server._mark_proceeded(token)
         
         record = server._validate_token(token)
-        assert record['proceeded'] == True
+        assert record['proceeded'] is True
         
         # Simulate user clicking "restore" (failure case)
         server._mark_used(token)
         server._mark_restored(token)
         
         record = server._validate_token(token)
-        assert record['used'] == True
-        assert record['restored'] == True
+        assert record['used'] is True
+        assert record['restored'] is True
     
     def test_multiple_checkpoints(self, core, server):
         """Test serving multiple checkpoints."""

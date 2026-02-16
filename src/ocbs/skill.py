@@ -23,8 +23,8 @@ import asyncio
 from datetime import timedelta
 from pathlib import Path
 
-from core import OCBSCore, BackupScope
-from serve import RestorePageServer
+from .core import OCBSCore, BackupScope
+from .serve import RestorePageServer
 
 
 class OCBSBackupSkill:
@@ -150,15 +150,22 @@ class OCBSBackupSkill:
                 if expires_hours <= 0:
                     return f"Checkpoint created but invalid expiry: {expires}"
                 
+                # Stop any existing server before starting a new one
+                if self.serve_server:
+                    try:
+                        self.serve_server.stop()
+                    except Exception:
+                        pass
+                
                 # Start serve server and create restore page
                 self.serve_server = RestorePageServer(state_dir=self.core.state_dir, host=host)
                 token = self.serve_server.serve_checkpoint(checkpoint_id, expires_hours)
                 url = self.serve_server.get_restore_url(token)
                 
-                # Start server in background
+                # Start server in background thread
                 import threading
-                server_thread = threading.Thread(target=self.serve_server.start)
-                server_thread.start()
+                self.serve_server_thread = threading.Thread(target=self.serve_server.start, daemon=True)
+                self.serve_server_thread.start()
                 
                 return (f"Checkpoint created: {checkpoint_id}\n"
                         f"  Reason: {reason}\n"
@@ -187,15 +194,22 @@ class OCBSBackupSkill:
             if expires_hours <= 0:
                 return f"Invalid expiry: {expires}"
             
+            # Stop any existing server before starting a new one
+            if self.serve_server:
+                try:
+                    self.serve_server.stop()
+                except Exception:
+                    pass
+            
             # Start serve server and create restore page
             self.serve_server = RestorePageServer(state_dir=self.core.state_dir, host=host)
             token = self.serve_server.serve_checkpoint(checkpoint, expires_hours)
             url = self.serve_server.get_restore_url(token)
             
-            # Start server in background
+            # Start server in background thread
             import threading
-            server_thread = threading.Thread(target=self.serve_server.start)
-            server_thread.start()
+            self.serve_server_thread = threading.Thread(target=self.serve_server.start, daemon=True)
+            self.serve_server_thread.start()
             
             return (f"Restore page created for checkpoint: {checkpoint}\n"
                     f"  URL: {url}\n"

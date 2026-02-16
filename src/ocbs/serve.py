@@ -12,9 +12,22 @@ from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, parse_qs
 
-from core import OCBSCore
+from .core import OCBSCore
+
+
+def parse_form_body(body: str) -> dict:
+    """Parse application/x-www-form-urlencoded body and return decoded dict.
+    
+    Args:
+        body: The raw request body string (e.g., "token=abc123&step=proceed")
+    
+    Returns:
+        Dict with decoded first-values (e.g., {'token': 'abc123', 'step': 'proceed'})
+    """
+    parsed = parse_qs(body)
+    return {key: values[0] if values else '' for key, values in parsed.items()}
 
 
 class RestorePageServer:
@@ -167,8 +180,8 @@ class RestorePageServer:
         import os
         from datetime import datetime
         
-        # Create notification directory
-        notify_dir = Path.home() / ".config" / "ocbs" / "proceed_notifications"
+        # Create notification directory using configured state_dir
+        notify_dir = Path(self.core.state_dir) / "proceed_notifications"
         notify_dir.mkdir(parents=True, exist_ok=True)
         
         # Write notification file with timestamp
@@ -187,10 +200,28 @@ class RestorePageServer:
         """Send webhook notification to gateway when user clicks proceed."""
         import urllib.request
         import urllib.error
+        import urllib.parse
         
-        # Get webhook URL from environment or use default
-        webhook_url = os.environ.get('OCBS_WEBHOOK_URL', 'http://localhost:18789/hooks/ocbs-proceed')
-        webhook_token = os.environ.get('OCBS_WEBHOOK_TOKEN', 'ocbs-webhook-secret')
+        # Get webhook URL from environment - must be set by user
+        webhook_url = os.environ.get('OCBS_WEBHOOK_URL')
+        if not webhook_url:
+            print("OCBS_WEBHOOK_URL not set, skipping webhook")
+            self._write_proceed_notification(token, checkpoint_id)
+            return
+        
+        # Validate URL scheme (only http/https allowed)
+        parsed_url = urllib.parse.urlparse(webhook_url)
+        if parsed_url.scheme not in ('http', 'https'):
+            print(f"Webhook URL has invalid scheme: {parsed_url.scheme}. Only http/https allowed.")
+            self._write_proceed_notification(token, checkpoint_id)
+            return
+        
+        # Require explicit webhook token - no default
+        webhook_token = os.environ.get('OCBS_WEBHOOK_TOKEN')
+        if not webhook_token:
+            print("OCBS_WEBHOOK_TOKEN not set, skipping webhook")
+            self._write_proceed_notification(token, checkpoint_id)
+            return
         
         payload = json.dumps({
             "message": f"OCBS Proceed: User acknowledged checkpoint {checkpoint_id}. Token: {token}",
@@ -219,7 +250,7 @@ class RestorePageServer:
     
     def get_pending_proceed_notifications(self) -> list[dict]:
         """Get all pending proceed notifications (for agent polling)."""
-        notify_dir = Path.home() / ".config" / "ocbs" / "proceed_notifications"
+        notify_dir = Path(self.core.state_dir) / "proceed_notifications"
         if not notify_dir.exists():
             return []
         
@@ -588,8 +619,7 @@ class RestorePageServer:
             
             <form action="/restore" method="POST">
                 <input type="hidden" name="token" value="{token}">
-                <button type="submit" class="btn btn-danger" {step1_button_disabled} 
-                        onclick="return confirm('Are you sure you want to RESTORE? This will revert all changes!');">
+                <button type="submit" class="btn btn-danger" {step1_button_disabled}>
                     <span class="step-label step2">Step 2</span>
                     🔴 Restore Backup & Restart
                     <span class="spinner" id="restore-spinner"></span>
@@ -711,12 +741,8 @@ class RestorePageServer:
                     content_length = int(self.headers.get('Content-Length', 0))
                     body = self.rfile.read(content_length).decode()
                     
-                    # Parse form data
-                    params = {}
-                    for pair in body.split('&'):
-                        if '=' in pair:
-                            key, value = pair.split('=', 1)
-                            params[key] = value
+                    # Parse form data with URL decoding
+                    params = parse_form_body(body)
                     
                     token = params.get('token')
                     if token:
@@ -781,16 +807,74 @@ class RestorePageServer:
                     else:
                         self.send_error(400, "Missing token")
                 
+                elif self.path == '/restart':
+                    content_length = int(self.headers.get('Content-Length', 0))
+                    body = self.rfile.read(content_length).decode()
+                    
+                    # Parse form data with URL decoding
+                    params = parse_form_body(body)
+                    
+                    token = params.get('token')
+                    
+                    # Validate token and check it's been "proceeded" (user confirmed)
+                    if not token:
+                        self.send_error(400, "Missing token")
+                        return
+                    
+                    serve_record = server_instance._validate_token(token)
+                    if not serve_record:
+                        self.send_error(401, "Invalid token")
+                        return
+                    
+                    # Only allow restart if user has proceeded (confirmed they received the link)
+                    if not serve_record.get('proceeded'):
+                        self.send_error(403, "Must confirm receipt first")
+                        return
+                    
+                    # Execute restart using resolved absolute paths
+                    import subprocess
+                    import shutil
+                    
+                    # Find absolute paths for commands
+                    systemctl_path = shutil.which('systemctl')
+                    openclaw_path = shutil.which('openclaw')
+                    
+                    if not systemctl_path or not openclaw_path:
+                        server_instance.logger.error("Could not find systemctl or openclaw")
+                        self.send_error(500, "Restart not available")
+                        return
+                    
+                    try:
+                        # Restart the gateway
+                        result = subprocess.run(
+                            [systemctl_path, 'restart', 'openclaw'],
+                            capture_output=True,
+                            text=True,
+                            timeout=30
+                        )
+                        if result.returncode != 0:
+                            server_instance.logger.error(f"Restart failed: {result.stderr}")
+                            self.send_error(500, "Restart failed")
+                            return
+                        
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html')
+                        self.end_headers()
+                        response = b"<html><body><h1>Gateway Restarted!</h1><p>The gateway should reconnect shortly.</p></body></html>"
+                        self.wfile.write(response)
+                    except subprocess.TimeoutExpired:
+                        self.send_error(500, "Restart timed out")
+                    except Exception as e:
+                        server_instance.logger.error(f"Restart error: {e}")
+                        self.send_error(500, str(e))
+                    return
+                
                 elif self.path == '/restore':
                     content_length = int(self.headers.get('Content-Length', 0))
                     body = self.rfile.read(content_length).decode()
                     
-                    # Parse form data
-                    params = {}
-                    for pair in body.split('&'):
-                        if '=' in pair:
-                            key, value = pair.split('=', 1)
-                            params[key] = value
+                    # Parse form data with URL decoding
+                    params = parse_form_body(body)
                     
                     token = params.get('token')
                     if token:
@@ -813,85 +897,6 @@ class RestorePageServer:
                     else:
                         self.send_error(400, "Missing token")
                 
-                elif self.path == '/restart':
-                    # Non-destructive restart - just restart gateway without restore
-                    content_length = int(self.headers.get('Content-Length', 0))
-                    body = self.rfile.read(content_length).decode()
-                    
-                    # Parse form data
-                    params = {}
-                    for pair in body.split('&'):
-                        if '=' in pair:
-                            key, value = pair.split('=', 1)
-                            params[key] = value
-                    
-                    token = params.get('token')
-                    if token:
-                        # Validate token
-                        serve_record = server_instance._validate_token(token)
-                        if not serve_record:
-                            self.send_error(404, "Invalid or expired token")
-                            return
-                        
-                        # Try to restart the gateway gracefully
-                        try:
-                            import subprocess
-                            # Check if we can use systemctl
-                            result = subprocess.run(
-                                ['which', 'systemctl'],
-                                capture_output=True,
-                                text=True
-                            )
-                            if result.returncode == 0:
-                                # Use systemctl to restart
-                                subprocess.Popen(
-                                    ['systemctl', 'restart', 'openclaw-gateway'],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL
-                                )
-                            else:
-                                # Try openclaw CLI
-                                subprocess.Popen(
-                                    ['openclaw', 'gateway', 'restart'],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL
-                                )
-                        except Exception as e:
-                            # If restart fails, just show a message
-                            pass
-                        
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'text/html')
-                        self.end_headers()
-                        restart_html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OCBS - Restarting</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
-               min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
-        .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; width: 100%; 
-                     box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }
-        h1 { color: #6c757d; margin-bottom: 16px; }
-        p { color: #666; margin-bottom: 24px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🔄 Restarting Gateway...</h1>
-        <p>The gateway is restarting. Please wait a moment and then refresh the page.</p>
-    </div>
-    <script>
-        setTimeout(function() { window.location.reload(); }, 5000);
-    </script>
-</body>
-</html>"""
-                        self.wfile.write(restart_html.encode())
-                    else:
-                        self.send_error(400, "Missing token")
                 else:
                     self.send_error(404, "Not Found")
         

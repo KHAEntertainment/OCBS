@@ -56,7 +56,7 @@ def start(ctx, checkpoint, expires, port, host, background):
         click.echo(f"Expires in: {expires}")
         
         if background:
-            server.start()
+            server.start(background=True)
             click.echo(f"Server running in background on port {port}")
             # Keep the server running briefly to ensure it starts
             time.sleep(1)

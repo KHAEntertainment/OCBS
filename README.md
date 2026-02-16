@@ -31,7 +31,7 @@ Once installed as a skill:
 
 ```
 /ocbs backup                    # Quick backup (config scope)
-/ocbs backup --scope full       # Full workspace backup
+/ocbs backup --scope config+session+workspace  # Full workspace backup
 /ocbs restore --latest          # Restore from latest
 /ocbs list                      # Show available backups
 /ocbs status                    # Show storage status

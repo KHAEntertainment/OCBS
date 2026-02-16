@@ -3,12 +3,16 @@ Unified configuration management for OCBS.
 Handles schedule.yaml and ocbs.yaml configuration files.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 from enum import Enum
 import yaml
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 
 class BackupScope(Enum):
@@ -50,7 +54,10 @@ class ScheduleConfig:
     
     @classmethod
     def from_dict(cls, data: dict) -> 'ScheduleConfig':
-        return cls(**data)
+        # Filter to only known fields to avoid TypeError on unknown keys
+        valid_fields = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
 
 
 @dataclass
@@ -71,7 +78,10 @@ class HeartbeatConfig:
     
     @classmethod
     def from_dict(cls, data: dict) -> 'HeartbeatConfig':
-        return cls(**data)
+        # Filter to only known fields to avoid TypeError on unknown keys
+        valid_fields = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
 
 
 @dataclass
@@ -88,7 +98,10 @@ class OCBSConfig:
     
     @classmethod
     def from_dict(cls, data: dict) -> 'OCBSConfig':
-        return cls(**data)
+        # Filter to only known fields to avoid TypeError on unknown keys
+        valid_fields = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
 
 
 class OCBSConfigManager:
@@ -121,7 +134,7 @@ class OCBSConfigManager:
                         schedules[schedule.id] = schedule
             except Exception as e:
                 # Log error but don't fail
-                pass
+                logger.warning(f"Failed to load schedules from {self.schedule_file}: {e}")
         
         return schedules
     
@@ -202,7 +215,7 @@ class OCBSConfigManager:
                     data = yaml.safe_load(f) or {}
                     return OCBSConfig.from_dict(data)
             except Exception as e:
-                pass
+                logger.warning(f"Failed to load config from {self.ocbs_file}: {e}")
         
         return OCBSConfig()
     

@@ -298,8 +298,8 @@ class TestRestore:
                 os.environ['HOME'] = original_home
 
 
-class TestRestore:
-    """Tests for restore functionality."""
+class TestRestoreFromBackup:
+    """Tests for restore from backup functionality."""
 
     def test_restore_backup(self, ocbs, sample_files, temp_state_dir):
         """Test restoring from a backup."""

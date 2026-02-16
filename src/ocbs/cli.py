@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from .core import OCBSCore, BackupScope
+from .serve_cli import serve, status as serve_status, revoke as serve_revoke
 
 
 @click.group()
@@ -22,7 +23,7 @@ def main(ctx, state_dir):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(['minimal', 'config', 'config+session', 'config+session+workspace']),
               default='config', help='Backup scope')
 @click.option('--reason', '-m', default='', help='Reason for backup')
 @click.pass_context
@@ -56,15 +57,8 @@ def restore(ctx, latest, checkpoint, target):
         if checkpoint:
             core.restore(checkpoint_id=checkpoint, target_dir=Path(target) if target else None)
             click.echo(f"Restored from checkpoint: {checkpoint}")
-        elif latest:
-            backup = core.get_latest_backup()
-            if backup:
-                core.restore(backup_id=backup.backup_id, target_dir=Path(target) if target else None)
-                click.echo(f"Restored from latest backup: {backup.backup_id}")
-            else:
-                click.echo("No backups available", err=True)
-                sys.exit(1)
         else:
+            # Default to latest backup if no checkpoint specified
             backup = core.get_latest_backup()
             if backup:
                 core.restore(backup_id=backup.backup_id, target_dir=Path(target) if target else None)
@@ -95,7 +89,7 @@ def status(ctx):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(['minimal', 'config', 'config+session', 'config+session+workspace']),
               help='Filter by scope')
 @click.pass_context
 def list(ctx, scope):
@@ -115,7 +109,7 @@ def list(ctx, scope):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(['minimal', 'config', 'config+session', 'config+session+workspace']),
               help='Cleanup specific scope')
 @click.pass_context
 def clean(ctx, scope):
@@ -129,8 +123,11 @@ def clean(ctx, scope):
 
 @main.command()
 @click.argument('reason')
+@click.option('--serve', is_flag=True, help='Serve restore page immediately')
+@click.option('--expires', '-e', default='4h', help='Link expiry time (e.g., 4h, 1d, 30m)')
+@click.option('--host', '-H', default=None, help='Host for URL (default: localhost)')
 @click.pass_context
-def checkpoint(ctx, reason):
+def checkpoint(ctx, reason, serve, expires, host):
     """Create a checkpoint for auto-restore capability."""
     core = ctx.obj['core']
     
@@ -138,13 +135,34 @@ def checkpoint(ctx, reason):
         checkpoint_id = core.create_checkpoint(reason)
         click.echo(f"Checkpoint created: {checkpoint_id}")
         click.echo(f"  Reason: {reason}")
+        
+        # If --serve is specified, start the restore page server
+        if serve:
+            from .serve import RestorePageServer
+            from .serve_cli import _parse_expiry
+            
+            host = host or 'localhost'
+            expires_hours = _parse_expiry(expires)
+            if expires_hours <= 0:
+                click.echo(f"Invalid expiry time: {expires}", err=True)
+                sys.exit(1)
+            
+            server = RestorePageServer(state_dir=core.state_dir, host=host)
+            token = server.serve_checkpoint(checkpoint_id, expires_hours)
+            url = server.get_restore_url(token)
+            
+            click.echo(f"\nRestore page created:")
+            click.echo(f"  URL: {url}")
+            click.echo(f"  Expires in: {expires}")
+            click.echo(f"\nPress Ctrl+C to stop the server")
+            try:
+                server.start()
+            except KeyboardInterrupt:
+                click.echo("\nServer stopped")
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-
-# Import serve commands
-from .serve_cli import serve, status as serve_status, revoke as serve_revoke
 
 # Add serve commands
 main.add_command(serve, 'serve')

@@ -273,6 +273,8 @@ class OCBSCore:
         
         now = datetime.now()
         to_remove = set()
+        seen_weeks = set()
+        seen_months = set()
         
         for backup_id, ts in all_backups:
             dt = datetime.fromisoformat(ts)
@@ -285,31 +287,21 @@ class OCBSCore:
             elif age_days <= retention['weekly'] * 7:
                 # Weekly retention: keep only one per week
                 week_key = f"{dt.year}-{dt.isocalendar()[1]}"
-                if hasattr(self, '_cleanup_week_keys'):
-                    self._cleanup_week_keys.add(week_key)
-                else:
-                    self._cleanup_week_keys = {week_key}
+                if week_key not in seen_weeks:
+                    seen_weeks.add(week_key)
                     # This is the first backup this week, keep it
                     continue
                 to_remove.add(backup_id)
             elif age_days <= retention['monthly'] * 30:
                 # Monthly retention: keep only one per month
                 month_key = f"{dt.year}-{dt.month}"
-                if hasattr(self, '_cleanup_month_keys'):
-                    self._cleanup_month_keys.add(month_key)
-                else:
-                    self._cleanup_month_keys = {month_key}
+                if month_key not in seen_months:
+                    seen_months.add(month_key)
                     # This is the first backup this month, keep it
                     continue
                 to_remove.add(backup_id)
             else:
                 to_remove.add(backup_id)
-        
-        # Reset keys for next call
-        if hasattr(self, '_cleanup_week_keys'):
-            del self._cleanup_week_keys
-        if hasattr(self, '_cleanup_month_keys'):
-            del self._cleanup_month_keys
         
         return list(to_remove)
     
@@ -479,11 +471,7 @@ class OCBSCore:
         for i in range(0, len(files), BATCH_SIZE):
             batch = files[i:i + BATCH_SIZE]
 
-            with sqlite3.connect(self.db_path, timeout=30) as conn:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA busy_timeout=30000")
-
-                for file_path, pack_file, offset, chunk_size in batch:
+            for file_path, pack_file, offset, chunk_size in batch:
                     pack_path = self.packs_dir / pack_file
 
                     # Read exactly chunk_size bytes from pack
