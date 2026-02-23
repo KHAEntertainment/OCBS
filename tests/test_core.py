@@ -199,6 +199,126 @@ class TestOCBSCore:
                 os.environ['HOME'] = original_home
 
 
+class TestRestore:
+    """Tests for restore functionality with batch processing."""
+    
+    def test_restore_basic(self, ocbs, sample_files, temp_state_dir):
+        """Test basic restore functionality."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+        
+        try:
+            # Create backup
+            backup = ocbs.backup(BackupScope.CONFIG, "test restore")
+            
+            # Modify a file
+            config_file = sample_files / "config" / "settings.json"
+            original_content = config_file.read_text()
+            config_file.write_text('{"modified": true}')
+            
+            # Restore
+            result = ocbs.restore(backup.backup_id)
+            
+            assert result is True
+            # File should be restored to original
+            restored_content = config_file.read_text()
+            assert restored_content == original_content
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+    
+    def test_restore_batch_processing(self, ocbs, temp_state_dir):
+        """Test restore handles many files without 'too many open files' error."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+        
+        try:
+            # Create many files to test batch processing
+            openclaw_home = temp_state_dir / ".openclaw"
+            openclaw_home.mkdir(exist_ok=True)
+            config_dir = openclaw_home / "config"
+            config_dir.mkdir(exist_ok=True)
+            
+            # Create 1000+ files to trigger batching
+            for i in range(1100):
+                (config_dir / f"file_{i:04d}.json").write_text(f'{{"id": {i}}}')
+            
+            # Backup
+            backup = ocbs.backup(BackupScope.CONFIG, "batch test")
+            
+            # Delete all files
+            for f in config_dir.glob("*.json"):
+                f.unlink()
+            
+            # Restore - this should not fail with "too many open files"
+            result = ocbs.restore(backup.backup_id)
+            
+            assert result is True
+            # Verify files restored
+            restored_files = list(config_dir.glob("*.json"))
+            assert len(restored_files) == 1100
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+    
+    def test_restore_from_checkpoint(self, ocbs, sample_files, temp_state_dir):
+        """Test restore from checkpoint."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+        
+        try:
+            # Create backup and checkpoint
+            backup = ocbs.backup(BackupScope.CONFIG, "checkpoint test")
+            checkpoint_id = ocbs.create_checkpoint("test checkpoint")
+            
+            # Modify files
+            config_file = sample_files / "config" / "settings.json"
+            config_file.write_text('{"modified": true}')
+            
+            # Restore from checkpoint
+            result = ocbs.restore(checkpoint_id=checkpoint_id)
+            
+            assert result is True
+            # File should be restored
+            restored_content = config_file.read_text()
+            assert "modified" not in restored_content
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+    
+    def test_restore_missing_backup(self, ocbs):
+        """Test restore with missing backup raises error."""
+        with pytest.raises(ValueError, match="No files found for backup_id"):
+            ocbs.restore(backup_id="nonexistent")
+    
+    def test_restore_continues_on_error(self, ocbs, sample_files, temp_state_dir):
+        """Test restore continues even if some files fail."""
+        import os
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+        
+        try:
+            backup = ocbs.backup(BackupScope.CONFIG, "error test")
+            
+            # Make pack file unreadable to cause error
+            pack_file = list(ocbs.packs_dir.glob("*.pack"))[0]
+            original_perms = pack_file.stat().st_mode
+            pack_file.chmod(0o000)
+            
+            try:
+                # Should not raise, should continue
+                result = ocbs.restore(backup.backup_id)
+                # Result may be True even with warnings logged
+            finally:
+                pack_file.chmod(original_perms)
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+
 class TestBackupScope:
     """Tests for BackupScope enum."""
     

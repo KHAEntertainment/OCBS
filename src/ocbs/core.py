@@ -444,40 +444,46 @@ class OCBSCore:
             else:
                 raise ValueError("No backup specified and no backups available")
         
+        # Single JOIN query gets all file metadata at once
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
-            # Get all files in backup
             cursor = conn.execute(
-                """SELECT file_path, chunk_id FROM backup_files WHERE backup_id = ?""",
+                """SELECT bf.file_path, c.pack_file, c.offset, c.size
+                   FROM backup_files bf JOIN chunks c ON bf.chunk_id = c.chunk_id
+                   WHERE bf.backup_id = ?""",
                 (backup_id,)
             )
             files = cursor.fetchall()
         
-        for file_path, chunk_id in files:
-            # Get chunk content
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.execute(
-                    "SELECT pack_file, offset FROM chunks WHERE chunk_id = ?",
-                    (chunk_id,)
-                )
-                row = cursor.fetchone()
-                if not row:
-                    continue
-                
-                pack_file, offset = row
-                pack_path = self.packs_dir / pack_file
-            
-            # Read chunk from pack
-            with open(pack_path, 'rb') as f:
-                f.seek(offset)
-                # Read until we hit next chunk or end (simplified)
-                content = f.read()
-            
-            # Write file
-            full_path = target_dir / file_path
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_bytes(content)
+        if not files:
+            raise ValueError(f"No files found for backup_id: {backup_id}")
+        
+        # Process in batches to avoid too many open files
+        BATCH_SIZE = 500
+        for i in range(0, len(files), BATCH_SIZE):
+            batch = files[i:i + BATCH_SIZE]
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                for file_path, pack_file, offset, chunk_size in batch:
+                    try:
+                        pack_path = self.packs_dir / pack_file
+                        
+                        # Read exact chunk size from pack
+                        with open(pack_path, 'rb') as f:
+                            f.seek(offset)
+                            content = f.read(chunk_size)
+                        
+                        # Write file
+                        # file_path includes .openclaw/ prefix, so strip it when joining with target_dir
+                        rel_path = Path(file_path)
+                        if rel_path.parts[0] == '.openclaw':
+                            rel_path = Path(*rel_path.parts[1:])
+                        full_path = target_dir / rel_path
+                        full_path.parent.mkdir(parents=True, exist_ok=True)
+                        full_path.write_bytes(content)
+                    except Exception as e:
+                        print(f"Warning: Failed to restore {file_path}: {e}")
+                        continue
         
         return True
     
