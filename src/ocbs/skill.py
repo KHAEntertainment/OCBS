@@ -1,6 +1,7 @@
 """Skill module for OCBS."""
 
 from .core import OCBSCore, BackupScope
+from .serve import generate_restore_url, format_restore_message, start_restore_server
 from pathlib import Path
 
 
@@ -103,17 +104,25 @@ class OCBSBackupSkill:
         self.core.cleanup(scope_enum)
         return "Cleanup completed"
     
-    async def checkpoint(self, reason: str) -> str:
+    async def checkpoint(self, reason: str, serve: bool = False) -> str:
         """Create a checkpoint for auto-restore.
         
         Args:
             reason: Reason for the checkpoint
+            serve: If True, start web server and return restore URL
             
         Returns:
-            Checkpoint ID
+            Checkpoint ID or restore URL with instructions
         """
         try:
             checkpoint_id = self.core.create_checkpoint(reason)
+            
+            if serve:
+                # Start restore server
+                start_restore_server()
+                # Return formatted message with auto-detected URL
+                return format_restore_message(checkpoint_id, reason)
+            
             return f"Checkpoint created: {checkpoint_id}\n  Reason: {reason}"
         except ValueError as e:
             return f"Error: {e}"
@@ -191,6 +200,11 @@ SKILL_MANIFEST = {
                 "reason": {
                     "type": "string",
                     "description": "Reason for checkpoint"
+                },
+                "serve": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Start web server and return restore URL"
                 }
             }
         }
