@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from .core import OCBSCore, BackupScope
+from .serve import format_restore_message, start_restore_server
 
 
 @click.group()
@@ -129,15 +130,23 @@ def clean(ctx, scope):
 
 @main.command()
 @click.argument('reason')
+@click.option('--serve', '-s', is_flag=True, help='Start web server and show restore URL')
 @click.pass_context
-def checkpoint(ctx, reason):
+def checkpoint(ctx, reason, serve):
     """Create a checkpoint for auto-restore capability."""
     core = ctx.obj['core']
     
     try:
         checkpoint_id = core.create_checkpoint(reason)
-        click.echo(f"Checkpoint created: {checkpoint_id}")
-        click.echo(f"  Reason: {reason}")
+        
+        if serve:
+            # Start restore server
+            start_restore_server()
+            # Show formatted message with URL
+            click.echo(format_restore_message(checkpoint_id, reason))
+        else:
+            click.echo(f"Checkpoint created: {checkpoint_id}")
+            click.echo(f"  Reason: {reason}")
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
