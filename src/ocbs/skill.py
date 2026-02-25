@@ -1,8 +1,30 @@
-"""Skill module for OCBS."""
+"""Skill module for OCBS.
 
-from .core import OCBSCore, BackupScope
-from .serve import generate_restore_url, format_restore_message, start_restore_server
+Agent Instructions for Restore Page URL:
+=========================================
+When serving restore pages, ensure the URL is accessible to the user:
+
+1. For local access (same machine): host="localhost" (default)
+2. For Tailscale access: host="100.x.x.x" (user's Tailscale IP)
+3. For remote access via Tailscale serve: set OCBS_SERVE_HOST env var
+
+Examples:
+  - Local: ocbs serve start --checkpoint <id>
+  - Tailscale: ocbs serve start --checkpoint <id> --host 100.113.254.117
+  - Persistent: export OCBS_SERVE_HOST=100.113.254.117
+
+The agent should determine the appropriate host based on:
+- User's current access method (local, Tailscale, or remote)
+- OpenClaw gateway binding (check gateway config for --tailscale or --bind)
+- User preference for this specific operation
+"""
+
+import asyncio
+from datetime import timedelta
 from pathlib import Path
+
+from core import OCBSCore, BackupScope
+from serve import RestorePageServer
 
 
 class OCBSBackupSkill:
@@ -13,6 +35,7 @@ class OCBSBackupSkill:
     
     def __init__(self):
         self.core = OCBSCore()
+        self.serve_server = None
     
     async def backup(self, scope: str = "config", reason: str = "") -> str:
         """Create a backup.
@@ -104,28 +127,138 @@ class OCBSBackupSkill:
         self.core.cleanup(scope_enum)
         return "Cleanup completed"
     
-    async def checkpoint(self, reason: str, serve: bool = False) -> str:
-        """Create a checkpoint for auto-restore.
+    async def checkpoint(self, reason: str, serve: bool = False, 
+                        expires: str = "4h", host: str = "localhost") -> str:
+        """Create a checkpoint for auto-restore, optionally serving a restore page.
         
         Args:
             reason: Reason for the checkpoint
-            serve: If True, start web server and return restore URL
+            serve: If True, create a restore page
+            expires: Expiry time for the restore page (e.g., "4h", "1d")
+            host: Host for the restore URL (use Tailscale IP for remote access)
+                  Can also be set via OCBS_SERVE_HOST environment variable
             
         Returns:
-            Checkpoint ID or restore URL with instructions
+            Checkpoint ID and optionally the restore URL
         """
         try:
             checkpoint_id = self.core.create_checkpoint(reason)
             
             if serve:
-                # Start restore server
-                start_restore_server()
-                # Return formatted message with auto-detected URL
-                return format_restore_message(checkpoint_id, reason)
+                # Parse expiry
+                expires_hours = self._parse_expiry(expires)
+                if expires_hours <= 0:
+                    return f"Checkpoint created but invalid expiry: {expires}"
+                
+                # Start serve server and create restore page
+                self.serve_server = RestorePageServer(state_dir=self.core.state_dir, host=host)
+                token = self.serve_server.serve_checkpoint(checkpoint_id, expires_hours)
+                url = self.serve_server.get_restore_url(token)
+                
+                # Start server in background
+                import threading
+                server_thread = threading.Thread(target=self.serve_server.start)
+                server_thread.start()
+                
+                return (f"Checkpoint created: {checkpoint_id}\n"
+                        f"  Reason: {reason}\n"
+                        f"  Restore URL: {url}\n"
+                        f"  Expires: {expires}")
             
             return f"Checkpoint created: {checkpoint_id}\n  Reason: {reason}"
         except ValueError as e:
             return f"Error: {e}"
+    
+    async def serve(self, checkpoint: str, expires: str = "4h", 
+                   host: str = "localhost") -> str:
+        """Serve a restore page for a checkpoint.
+        
+        Args:
+            checkpoint: Checkpoint ID to serve
+            expires: Expiry time for the restore page (e.g., "4h", "1d")
+            host: Host for the restore URL (use Tailscale IP for remote access)
+                  Can also be set via OCBS_SERVE_HOST environment variable
+            
+        Returns:
+            Restore URL and status
+        """
+        try:
+            expires_hours = self._parse_expiry(expires)
+            if expires_hours <= 0:
+                return f"Invalid expiry: {expires}"
+            
+            # Start serve server and create restore page
+            self.serve_server = RestorePageServer(state_dir=self.core.state_dir, host=host)
+            token = self.serve_server.serve_checkpoint(checkpoint, expires_hours)
+            url = self.serve_server.get_restore_url(token)
+            
+            # Start server in background
+            import threading
+            server_thread = threading.Thread(target=self.serve_server.start)
+            server_thread.start()
+            
+            return (f"Restore page created for checkpoint: {checkpoint}\n"
+                    f"  URL: {url}\n"
+                    f"  Expires: {expires}\n"
+                    f"  Host: {host}")
+        except ValueError as e:
+            return f"Error: {e}"
+    
+    def _parse_expiry(self, expires: str) -> float:
+        """Parse expiry string to hours."""
+        expires = expires.strip().lower()
+        
+        multipliers = {
+            's': 1/3600,
+            'm': 1/60,
+            'h': 1,
+            'd': 24,
+            'w': 168,
+        }
+        
+        for suffix, mult in multipliers.items():
+            if expires.endswith(suffix):
+                try:
+                    return float(expires[:-1]) * mult
+                except ValueError:
+                    return 0
+
+        try:
+            return float(expires)
+        except ValueError:
+            return 0
+
+    async def poll_proceed_notifications(self, clear: bool = True) -> str:
+        """Poll for proceed notifications from restore pages.
+
+        Agents should call this periodically to check if the user has
+        clicked "I received this" on any restore pages.
+
+        Args:
+            clear: If True, clear the notification files after reading (default)
+
+        Returns:
+            List of pending proceed notifications or empty string
+        """
+        if not self.serve_server:
+            return "No active serve server"
+
+        notifications = self.serve_server.get_pending_proceed_notifications()
+
+        if not notifications:
+            return "No pending proceed notifications"
+
+        result_lines = [f"Pending proceed notifications ({len(notifications)}):"]
+        for notif in notifications:
+            result_lines.append(f"  Token: {notif['token'][:16]}...")
+            result_lines.append(f"    Checkpoint: {notif['checkpoint_id']}")
+            result_lines.append(f"    Proceeded at: {notif['proceeded_at']}")
+
+        if clear:
+            for notif in notifications:
+                self.serve_server.clear_proceed_notification(notif['token'])
+
+        return "\n".join(result_lines)
 
 
 # Skill manifest for OpenClaw skill system
@@ -139,7 +272,7 @@ SKILL_MANIFEST = {
             "parameters": {
                 "scope": {
                     "type": "string",
-                    "enum": ["config", "config+session", "config+session+workspace"],
+                    "enum": ["minimal", "config", "config+session", "config+session+workspace"],
                     "default": "config",
                     "description": "Backup scope"
                 },
@@ -204,7 +337,46 @@ SKILL_MANIFEST = {
                 "serve": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Start web server and return restore URL"
+                    "description": "Create a restore page URL"
+                },
+                "expires": {
+                    "type": "string",
+                    "default": "4h",
+                    "description": "Expiry time for restore page (e.g., 4h, 1d)"
+                },
+                "host": {
+                    "type": "string",
+                    "default": "localhost",
+                    "description": "Host for restore URL (use Tailscale IP for remote access)"
+                }
+            }
+        },
+        "serve": {
+            "description": "Serve a restore page for a checkpoint",
+            "parameters": {
+                "checkpoint": {
+                    "type": "string",
+                    "description": "Checkpoint ID to serve"
+                },
+                "expires": {
+                    "type": "string",
+                    "default": "4h",
+                    "description": "Expiry time for the restore page"
+                },
+                "host": {
+                    "type": "string",
+                    "default": "localhost",
+                    "description": "Host for restore URL (use Tailscale IP for remote access)"
+                }
+            }
+        },
+        "poll-proceed": {
+            "description": "Poll for proceed notifications from restore pages",
+            "parameters": {
+                "clear": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Clear notifications after reading"
                 }
             }
         }
