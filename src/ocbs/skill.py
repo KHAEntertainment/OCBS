@@ -104,7 +104,7 @@ class OCBSBackupSkill:
         self.core.cleanup(scope_enum)
         return "Cleanup completed"
     
-    async def checkpoint(self, reason: str, serve: bool = False) -> str:
+    async def checkpoint(self, reason: str, serve: bool = False, port: Optional[int] = None) -> str:
         """Create a checkpoint for auto-restore.
         
         Args:
@@ -119,7 +119,7 @@ class OCBSBackupSkill:
             
             if serve:
                 # Start restore server
-                start_restore_server()
+                start_restore_server(port=port)
                 # Return formatted message with auto-detected URL
                 return format_restore_message(checkpoint_id, reason)
             

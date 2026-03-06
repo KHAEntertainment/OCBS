@@ -99,6 +99,14 @@ class OCBSCore:
                     FOREIGN KEY (backup_id) REFERENCES backups(backup_id)
                 );
                 
+                CREATE TABLE IF NOT EXISTS serve_records (
+                    checkpoint_id TEXT PRIMARY KEY,
+                    backup_id TEXT,
+                    reason TEXT,
+                    timestamp TEXT,
+                    FOREIGN KEY (backup_id) REFERENCES backups(backup_id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_chunks_chunk_id ON chunks(chunk_id);
                 CREATE INDEX IF NOT EXISTS idx_backup_timestamp ON backups(timestamp);
             """)
