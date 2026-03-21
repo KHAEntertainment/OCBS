@@ -4,6 +4,7 @@ Tests for OCBS core functionality.
 
 import os
 import json
+import sqlite3
 import tarfile
 import tempfile
 import pytest
@@ -397,6 +398,17 @@ class TestRestore:
         finally:
             if original_home:
                 os.environ['HOME'] = original_home
+
+class TestServeRecords:
+    """Tests for serve record accessors."""
+
+    def test_get_checkpoint_serves_handles_missing_table(self, ocbs):
+        """Test serve lookups recover if the serve_records table is absent."""
+
+        with sqlite3.connect(ocbs.db_path) as conn:
+            conn.execute("DROP TABLE serve_records")
+
+        assert ocbs.get_checkpoint_serves() == []
 
 
 class TestBackupScope:

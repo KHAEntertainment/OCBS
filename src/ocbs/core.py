@@ -182,6 +182,21 @@ class OCBSCore:
             """
             )
 
+    def _ensure_serve_records_table(self, conn: sqlite3.Connection):
+        """Create serve_records if it is missing in an older or partial DB."""
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS serve_records (
+                checkpoint_id TEXT PRIMARY KEY,
+                backup_id TEXT,
+                reason TEXT,
+                timestamp TEXT,
+                FOREIGN KEY (backup_id) REFERENCES backups(backup_id)
+            )
+            """
+        )
+
     def _compute_content_hash(self, content: bytes) -> str:
         """Compute SHA-256 hash of content."""
 
@@ -622,6 +637,37 @@ class OCBSCore:
             )
 
         return checkpoint_id
+
+    def get_checkpoint_serves(self, checkpoint_id: Optional[str] = None) -> list[dict]:
+        """Return recorded checkpoint serve entries."""
+
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            self._ensure_serve_records_table(conn)
+
+            if checkpoint_id:
+                cursor = conn.execute(
+                    """SELECT checkpoint_id, backup_id, reason, timestamp
+                       FROM serve_records WHERE checkpoint_id = ?
+                       ORDER BY timestamp DESC""",
+                    (checkpoint_id,),
+                )
+            else:
+                cursor = conn.execute(
+                    """SELECT checkpoint_id, backup_id, reason, timestamp
+                       FROM serve_records ORDER BY timestamp DESC"""
+                )
+
+            return [
+                {
+                    "checkpoint_id": row[0],
+                    "backup_id": row[1],
+                    "reason": row[2],
+                    "timestamp": row[3],
+                }
+                for row in cursor.fetchall()
+            ]
 
     def restore(
         self,
