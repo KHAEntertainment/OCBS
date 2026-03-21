@@ -874,30 +874,59 @@ class RestorePageServer:
                         self.send_response(200)
                         self.send_header('Content-Type', 'text/html')
                         self.end_headers()
-                        restart_html = """<!DOCTYPE html>
+
+                        if restart_ok:
+                            restart_html = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OCBS - Restarting</title>
+    <title>OCBS - Gateway Restarted</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); 
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
                min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
-        .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; width: 100%; 
+        .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; width: 100%;
                      box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }
-        h1 { color: #6c757d; margin-bottom: 16px; }
+        h1 { color: #28a745; margin-bottom: 16px; }
         p { color: #666; margin-bottom: 24px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔄 Restarting Gateway...</h1>
+        <h1>Gateway restarted</h1>
         <p>The gateway is restarting. Please wait a moment and then refresh the page.</p>
     </div>
     <script>
         setTimeout(function() { window.location.reload(); }, 5000);
     </script>
+</body>
+</html>"""
+                        else:
+                            error_msg = restart_error if restart_error else "Unknown error"
+                            restart_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCBS - Restart Failed</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+               min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }}
+        .container {{ background: white; border-radius: 16px; padding: 40px; max-width: 500px; width: 100%;
+                     box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }}
+        h1 {{ color: #dc3545; margin-bottom: 16px; }}
+        p {{ color: #666; margin-bottom: 24px; }}
+        .error {{ color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb;
+                 border-radius: 4px; padding: 12px; margin-top: 16px; word-break: break-word; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Restart failed: {error_msg}</h1>
+        <p>The gateway could not be restarted.</p>
+    </div>
 </body>
 </html>"""
                         self.wfile.write(restart_html.encode())
@@ -923,3 +952,42 @@ class RestorePageServer:
         if self.server:
             self.server.shutdown()
             self.server.server_close()
+
+
+# Global server instance for convenience functions
+_global_server: Optional[RestorePageServer] = None
+
+
+def start_restore_server(port: int = 18790, host: str = "localhost",
+                        bind_host: str = "127.0.0.1", state_dir: Optional[Path] = None):
+    """Start the restore server in the background."""
+    global _global_server
+    if _global_server is None:
+        _global_server = RestorePageServer(state_dir=state_dir, port=port, host=host, bind_host=bind_host)
+        _global_server.start(background=True)
+    return _global_server
+
+
+def format_restore_message(checkpoint_id: str, reason: str,
+                          port: int = 18790, host: str = "localhost") -> str:
+    """Format a restore message with URL for a checkpoint."""
+    global _global_server
+
+    # Ensure server is running
+    if _global_server is None:
+        start_restore_server(port=port, host=host)
+
+    # Create serve record for this checkpoint
+    token = _global_server.serve_checkpoint(checkpoint_id)
+    url = _global_server.get_restore_url(token)
+
+    message = f"""
+Checkpoint created: {checkpoint_id}
+Reason: {reason}
+
+Restore URL (expires in 4 hours):
+{url}
+
+Share this URL to allow emergency restore of this checkpoint.
+"""
+    return message.strip()
