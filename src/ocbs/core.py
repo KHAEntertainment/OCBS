@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 import xxhash
 
@@ -89,10 +89,13 @@ class OCBSCore:
 
         config = dict(self.DEFAULT_CONFIG)
         if self.config_path.exists():
-            with open(self.config_path, encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                config.update(loaded)
+            try:
+                with open(self.config_path, encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    config.update(loaded)
+            except (json.JSONDecodeError, OSError):
+                pass
         return config
 
     def _get_native_backup_dir(self) -> Optional[Path]:
@@ -117,6 +120,11 @@ class OCBSCore:
             return BackupSource(configured)
         except ValueError:
             return BackupSource.DIRECT
+
+    def get_default_source(self) -> BackupSource:
+        """Return the configured default backup source."""
+
+        return self._resolve_backup_source(None)
 
     def _scope_to_native_args(self, scope: BackupScope) -> list[str]:
         """Map OCBS scope to native backup CLI flags."""
@@ -320,7 +328,7 @@ class OCBSCore:
         backup_id: str,
         scope: BackupScope,
         reason: str,
-        files: list[tuple[str, bytes]],
+        files: Iterable[tuple[str, bytes]],
     ) -> BackupManifest:
         """Store backup file content and metadata."""
 
@@ -372,14 +380,14 @@ class OCBSCore:
     def _backup_direct(self, scope: BackupScope, reason: str = "") -> BackupManifest:
         """Back up files directly from the OpenClaw home."""
 
-        paths = self._get_paths_for_scope(scope)
-        files = []
-        for file_path in self._collect_files(paths):
-            rel_path = str(file_path.relative_to(Path.home()))
-            files.append((rel_path, file_path.read_bytes()))
+        def _file_gen():
+            paths = self._get_paths_for_scope(scope)
+            for file_path in self._collect_files(paths):
+                rel_path = str(file_path.relative_to(Path.home()))
+                yield (rel_path, file_path.read_bytes())
 
         backup_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        return self._record_backup(backup_id, scope, reason, files)
+        return self._record_backup(backup_id, scope, reason, _file_gen())
 
     def _run_native_backup(self, scope: BackupScope, dry_run: bool = False) -> Path:
         """Run OpenClaw native backup and return the archive path."""
@@ -422,11 +430,15 @@ class OCBSCore:
             try:
                 payload = json.loads(result.stdout or "{}")
             except json.JSONDecodeError as exc:
+                if cleanup_output_dir:
+                    shutil.rmtree(output_dir, ignore_errors=True)
                 raise RuntimeError("native backup dry-run did not return valid JSON") from exc
 
             archive = payload.get("archive") or payload.get("archive_path")
             if not archive:
                 archive = str(output_dir / "dry-run-openclaw-backup.tar.gz")
+            if cleanup_output_dir:
+                shutil.rmtree(output_dir, ignore_errors=True)
             return Path(archive)
 
         archives = sorted(output_dir.glob("*.tar.gz"), key=lambda path: path.stat().st_mtime)
@@ -437,6 +449,22 @@ class OCBSCore:
 
         return archives[-1]
 
+    def _safe_extract_archive(self, tar: tarfile.TarFile, extract_dir: Path) -> None:
+        """Extract a tar archive safely, rejecting path traversal and link members."""
+
+        extract_dir_resolved = extract_dir.resolve()
+        for member in tar.getmembers():
+            if member.issym() or member.islnk():
+                raise RuntimeError(
+                    f"Refusing to extract archive with link entry: {member.name}"
+                )
+            member_path = (extract_dir / member.name).resolve()
+            if not member_path.is_relative_to(extract_dir_resolved):
+                raise RuntimeError(
+                    f"Refusing to extract path outside target directory: {member.name}"
+                )
+            tar.extract(member, extract_dir, filter="data")
+
     def _chunk_archive(self, archive_path: Path, scope: BackupScope, reason: str = "") -> BackupManifest:
         """Extract native archive and store its files as OCBS chunks."""
 
@@ -444,20 +472,18 @@ class OCBSCore:
         with tempfile.TemporaryDirectory(prefix="ocbs-extract-") as extract_dir_name:
             extract_dir = Path(extract_dir_name)
             with tarfile.open(archive_path, "r:gz") as tar:
-                tar.extractall(extract_dir)
+                self._safe_extract_archive(tar, extract_dir)
 
-            files_to_store = []
-            for file_path in sorted(extract_dir.rglob("*")):
-                if not file_path.is_file():
-                    continue
+            def _file_gen():
+                for file_path in sorted(extract_dir.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    rel_path = file_path.relative_to(extract_dir)
+                    if rel_path == Path("manifest.json"):
+                        continue
+                    yield (str(rel_path), file_path.read_bytes())
 
-                rel_path = file_path.relative_to(extract_dir)
-                if rel_path == Path("manifest.json"):
-                    continue
-
-                files_to_store.append((str(rel_path), file_path.read_bytes()))
-
-        return self._record_backup(backup_id, scope, reason, files_to_store)
+            return self._record_backup(backup_id, scope, reason, _file_gen())
 
     def backup(
         self,
@@ -737,20 +763,19 @@ class OCBSCore:
         batch_size = 500
         for i in range(0, len(files), batch_size):
             batch = files[i : i + batch_size]
-            with sqlite3.connect(self.db_path, timeout=30):
-                for file_path, pack_file, offset, chunk_size in batch:
-                    try:
-                        pack_path = self.packs_dir / pack_file
-                        with open(pack_path, "rb") as f:
-                            f.seek(offset)
-                            content = f.read(chunk_size)
+            for file_path, pack_file, offset, chunk_size in batch:
+                try:
+                    pack_path = self.packs_dir / pack_file
+                    with open(pack_path, "rb") as f:
+                        f.seek(offset)
+                        content = f.read(chunk_size)
 
-                        full_path = self._resolve_restore_path(file_path, target_dir)
-                        full_path.parent.mkdir(parents=True, exist_ok=True)
-                        full_path.write_bytes(content)
-                    except Exception as exc:
-                        print(f"Warning: Failed to restore {file_path}: {exc}")
-                        continue
+                    full_path = self._resolve_restore_path(file_path, target_dir)
+                    full_path.parent.mkdir(parents=True, exist_ok=True)
+                    full_path.write_bytes(content)
+                except Exception as exc:
+                    print(f"Warning: Failed to restore {file_path}: {exc}")
+                    continue
 
         return True
 

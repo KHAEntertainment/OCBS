@@ -15,13 +15,12 @@ python install_skill.py
 Create a backup of OpenClaw configuration.
 
 ```bash
-/ocbs backup --scope minimal --reason "Quick safety snapshot"
 /ocbs backup --scope config --reason "Before update"
 /ocbs backup --scope config --source native --reason "Before upgrade"
 ```
 
 **Parameters:**
-- `--scope <scope>` - Backup scope: `minimal`, `config`, `config+session`, `config+session+workspace`
+- `--scope <scope>` - Backup scope: `config`, `config+session`, `config+session+workspace`
 - `--source <source>` - Backup source: `direct` or `native`
 - `--reason <reason>` - Optional reason for the backup
 
@@ -31,7 +30,6 @@ Create a backup of OpenClaw configuration.
 - If the native CLI is unavailable, OCBS falls back to the direct source
 
 **Scope notes:**
-- `minimal` is the smallest backup profile for quick safety snapshots.
 - `config` backs up OpenClaw configuration and credentials.
 - `config+session` adds OpenClaw session state.
 - `config+session+workspace` includes the full workspace.
