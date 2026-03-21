@@ -195,7 +195,29 @@ class OCBSCore:
                 FOREIGN KEY (backup_id) REFERENCES backups(backup_id)
             )
             """
-        )
+            )
+
+    def _resolve_restore_path(self, file_path: str, target_dir: Path) -> Path:
+        """Resolve a stored backup path into a safe destination under target_dir."""
+
+        rel_path = Path(file_path)
+        if rel_path.parts and rel_path.parts[0] == ".openclaw":
+            rel_path = Path(*rel_path.parts[1:])
+
+        if rel_path.is_absolute():
+            raise ValueError(f"absolute restore paths are not allowed: {file_path}")
+
+        if not rel_path.parts:
+            raise ValueError(f"empty restore path is not allowed: {file_path}")
+
+        base_dir = target_dir.resolve()
+        full_path = (base_dir / rel_path).resolve()
+        try:
+            full_path.relative_to(base_dir)
+        except ValueError as exc:
+            raise ValueError(f"restore path escapes target directory: {file_path}") from exc
+
+        return full_path
 
     def _compute_content_hash(self, content: bytes) -> str:
         """Compute SHA-256 hash of content."""
@@ -723,10 +745,7 @@ class OCBSCore:
                             f.seek(offset)
                             content = f.read(chunk_size)
 
-                        rel_path = Path(file_path)
-                        if rel_path.parts and rel_path.parts[0] == ".openclaw":
-                            rel_path = Path(*rel_path.parts[1:])
-                        full_path = target_dir / rel_path
+                        full_path = self._resolve_restore_path(file_path, target_dir)
                         full_path.parent.mkdir(parents=True, exist_ok=True)
                         full_path.write_bytes(content)
                     except Exception as exc:

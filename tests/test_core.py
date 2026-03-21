@@ -399,6 +399,44 @@ class TestRestore:
             if original_home:
                 os.environ['HOME'] = original_home
 
+    def test_restore_rejects_db_absolute_paths(self, ocbs, temp_state_dir):
+        """Test restore skips unsafe absolute paths from the database."""
+        import os
+
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            openclaw_home = temp_state_dir / ".openclaw"
+            config_dir = openclaw_home / "config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            config_file = config_dir / "settings.json"
+            config_file.write_text('{"safe": true}')
+
+            backup = ocbs.backup(BackupScope.CONFIG, "security test")
+
+            with sqlite3.connect(ocbs.db_path) as conn:
+                conn.execute(
+                    """UPDATE backup_files
+                       SET file_path = ?
+                       WHERE backup_id = ? AND file_path = ?""",
+                    ("/tmp/ocbs-escape.txt", backup.backup_id, ".openclaw/config/settings.json"),
+                )
+
+            config_file.unlink()
+            escaped_path = Path("/tmp/ocbs-escape.txt")
+            if escaped_path.exists():
+                escaped_path.unlink()
+
+            result = ocbs.restore(backup.backup_id)
+
+            assert result is True
+            assert not config_file.exists()
+            assert not escaped_path.exists()
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
 class TestServeRecords:
     """Tests for serve record accessors."""
 
