@@ -152,7 +152,7 @@ These commands can be run directly from terminal:
 
 ```bash
 # Create OCBS backup (incremental)
-ocbs backup --scope minimal --reason "Quick safety snapshot"
+ocbs backup --scope config --reason "Quick safety snapshot"
 ocbs backup --scope config --reason "Manual backup"
 ocbs backup --scope config --source native --reason "Pre-upgrade snapshot"
 
