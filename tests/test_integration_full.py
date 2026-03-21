@@ -141,6 +141,15 @@ class TestSkillInterface:
         assert hasattr(skill, 'list')
         assert hasattr(skill, 'clean')
         assert hasattr(skill, 'checkpoint')
+
+    def test_backup_skill_supports_source(self):
+        """Test skill manifest exposes backup source parameter."""
+
+        from ocbs.skill import SKILL_MANIFEST
+
+        params = SKILL_MANIFEST['commands']['backup']['parameters']
+        assert 'source' in params
+        assert params['source']['enum'] == ['direct', 'native']
     
     def test_skill_manifest(self):
         """Test skill manifest structure."""

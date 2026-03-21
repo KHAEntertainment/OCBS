@@ -3,12 +3,14 @@ Tests for OCBS core functionality.
 """
 
 import os
+import json
+import tarfile
 import tempfile
 import pytest
 from pathlib import Path
 from datetime import datetime
 
-from ocbs.core import OCBSCore, BackupScope, BackupManifest
+from ocbs.core import BackupManifest, BackupScope, BackupSource, OCBSCore
 
 
 @pytest.fixture
@@ -198,6 +200,84 @@ class TestOCBSCore:
             if original_home:
                 os.environ['HOME'] = original_home
 
+    def test_run_native_backup_dry_run(self, ocbs, monkeypatch):
+        """Test native backup dry-run path."""
+
+        class Result:
+            returncode = 0
+            stdout = json.dumps({"archive": "/tmp/native-backup.tar.gz"})
+            stderr = ""
+
+        def fake_run(args, capture_output, text, timeout, check):
+            assert "--dry-run" in args
+            assert "--json" in args
+            return Result()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        archive = ocbs._run_native_backup(BackupScope.CONFIG, dry_run=True)
+        assert archive == Path("/tmp/native-backup.tar.gz")
+
+    def test_chunk_archive(self, ocbs, temp_state_dir):
+        """Test chunking a native archive into OCBS storage."""
+
+        archive_path = temp_state_dir / "native.tar.gz"
+        source_dir = temp_state_dir / "archive-src"
+        source_dir.mkdir()
+        (source_dir / ".openclaw").mkdir()
+        (source_dir / ".openclaw" / "config").mkdir()
+        (source_dir / ".openclaw" / "config" / "settings.json").write_text('{"test": true}')
+        (source_dir / "manifest.json").write_text('{"ignored": true}')
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(source_dir / ".openclaw", arcname=".openclaw")
+            tar.add(source_dir / "manifest.json", arcname="manifest.json")
+
+        manifest = ocbs._chunk_archive(archive_path, BackupScope.CONFIG, "native test")
+
+        assert manifest.scope == BackupScope.CONFIG
+        assert ".openclaw/config/settings.json" in manifest.paths
+        assert "manifest.json" not in manifest.paths
+        assert len(manifest.chunk_ids) == 1
+
+    def test_backup_native_falls_back_to_direct(self, ocbs, sample_files, temp_state_dir, monkeypatch):
+        """Test native source falls back to direct when CLI is unavailable."""
+
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        def fake_native(scope, dry_run=False):
+            raise FileNotFoundError("missing openclaw")
+
+        monkeypatch.setattr(ocbs, "_run_native_backup", fake_native)
+
+        try:
+            manifest = ocbs.backup(BackupScope.CONFIG, "fallback test", source=BackupSource.NATIVE)
+            assert any('config' in path for path in manifest.paths)
+            assert manifest.reason == "fallback test"
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+    def test_config_default_source(self, temp_state_dir):
+        """Test config loading for default source."""
+
+        config_path = temp_state_dir / "config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "defaultSource": "native",
+                    "nativeBackupDir": str(temp_state_dir / "native-cache"),
+                }
+            )
+        )
+
+        ocbs = OCBSCore(state_dir=temp_state_dir)
+
+        assert ocbs._resolve_backup_source(None) == BackupSource.NATIVE
+        assert ocbs.native_backup_dir == temp_state_dir / "native-cache"
+        assert ocbs.native_backup_dir.exists()
+
 
 class TestRestore:
     """Tests for restore functionality with batch processing."""
@@ -327,6 +407,16 @@ class TestBackupScope:
         assert BackupScope.CONFIG.value == "config"
         assert BackupScope.CONFIG_SESSION.value == "config+session"
         assert BackupScope.CONFIG_SESSION_WORKSPACE.value == "config+session+workspace"
+
+
+class TestBackupSource:
+    """Tests for BackupSource enum."""
+
+    def test_source_values(self):
+        """Test source enum values."""
+
+        assert BackupSource.DIRECT.value == "direct"
+        assert BackupSource.NATIVE.value == "native"
 
 
 class TestFileCollection:

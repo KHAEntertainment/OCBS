@@ -1,6 +1,6 @@
 # OCBS Native Backup Integration Plan
 
-**Status:** Design Phase  
+**Status:** Phase 2 Implemented  
 **Created:** 2026-03-20  
 **Priority:** Medium
 
@@ -189,14 +189,14 @@ def native_verify(archive: str):
 - [ ] Test native backup wrapping
 
 ### Phase 2: Native Backend (Option 2) - 3-5 days
-- [ ] Add `BackupSource.NATIVE` enum to core.py
-- [ ] Implement `_run_native_backup()` method
-- [ ] Implement `_chunk_archive()` for extraction
-- [ ] Add `--source` flag to CLI backup command
-- [ ] Add `defaultSource` config option
-- [ ] Update skill commands to support `--source` parameter
-- [ ] Integration tests for native source path
-- [ ] Documentation updates
+- [x] Add `BackupSource.NATIVE` enum to core.py
+- [x] Implement `_run_native_backup()` method
+- [x] Implement `_chunk_archive()` for extraction
+- [x] Add `--source` flag to CLI backup command
+- [x] Add `defaultSource` config option
+- [x] Update skill commands to support `--source` parameter
+- [x] Integration tests for native source path
+- [x] Documentation updates
 
 ### Phase 3: Unified Experience - 2-3 days
 - [ ] Hybrid mode: direct for config, native for workspace

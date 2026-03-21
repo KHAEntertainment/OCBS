@@ -16,11 +16,18 @@ Create a backup of OpenClaw configuration.
 
 \`\`\`bash
 /ocbs backup --scope config --reason "Before update"
+/ocbs backup --scope config --source native --reason "Before upgrade"
 \`\`\`
 
 **Parameters:**
 - \`--scope <scope>\` - Backup scope: \`config\`, \`config+session\`, \`config+session+workspace\`
+- \`--source <source>\` - Backup source: \`direct\` or \`native\`
 - \`--reason <reason>\` - Optional reason for the backup
+
+**Source behavior:**
+- \`direct\` reads OpenClaw files directly into OCBS chunk storage
+- \`native\` runs \`openclaw backup create\`, extracts the archive, then imports it into OCBS chunk storage
+- If the native CLI is unavailable, OCBS falls back to the direct source
 
 ### restore
 Restore from a backup or checkpoint.
@@ -135,6 +142,7 @@ These commands can be run directly from terminal:
 \`\`\`bash
 # Create OCBS backup (incremental)
 ocbs backup --scope config --reason "Manual backup"
+ocbs backup --scope config --source native --reason "Pre-upgrade snapshot"
 
 # Restore from latest OCBS backup
 ocbs restore --latest

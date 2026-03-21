@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from .core import OCBSCore, BackupScope
+from .core import BackupSource, BackupScope, OCBSCore
 from .serve import generate_restore_url, format_restore_message, start_restore_server
 
 
@@ -17,20 +17,37 @@ class OCBSBackupSkill:
     def __init__(self):
         self.core = OCBSCore()
     
-    async def backup(self, scope: str = "config", reason: str = "") -> str:
+    async def backup(
+        self,
+        scope: str = "config",
+        reason: str = "",
+        source: str = None,
+    ) -> str:
         """Create a backup.
         
         Args:
             scope: Backup scope (config, config+session, config+session+workspace)
             reason: Optional reason for the backup
+            source: Backup source (direct or native)
             
         Returns:
             Status message
         """
         try:
             scope_enum = BackupScope(scope)
-            manifest = self.core.backup(scope_enum, reason)
-            return f"Backup created: {manifest.backup_id}\n  Scope: {scope}\n  Files: {len(manifest.paths)}"
+            source_enum = BackupSource(source) if source else None
+            manifest = self.core.backup(scope_enum, reason, source=source_enum)
+            effective_source = source_enum or self.core._resolve_backup_source(None)
+            return (
+                f"Backup created: {manifest.backup_id}\n"
+                f"  Scope: {scope}\n"
+                f"  Source: {effective_source.value}\n"
+                f"  Files: {len(manifest.paths)}"
+            )
+        except ValueError as e:
+            return f"Error creating backup: {e}"
+        except FileNotFoundError:
+            return "Error creating backup: openclaw command not found for native source"
         except Exception as e:
             return f"Error creating backup: {e}"
     
@@ -228,6 +245,12 @@ SKILL_MANIFEST = {
                     "type": "string",
                     "default": "",
                     "description": "Reason for backup"
+                },
+                "source": {
+                    "type": "string",
+                    "enum": ["direct", "native"],
+                    "default": None,
+                    "description": "Backup source"
                 }
             }
         },
