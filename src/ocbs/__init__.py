@@ -1,8 +1,6 @@
-"""
-OCBS - OpenClaw Backup System
+# OCBS Backup Skill
 
-An incremental backup system that integrates with OpenClaw's skills,
-crons, and heartbeats while remaining update-agnostic.
-"""
+from .skill import OCBSBackupSkill, SKILL_MANIFEST
 
-__version__ = "0.1.0"
+__all__ = ["OCBSBackupSkill", "SKILL_MANIFEST"]
+
