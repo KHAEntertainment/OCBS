@@ -94,18 +94,52 @@ The restore page shows:
 - Restore and Cancel buttons
 - 24-hour expiration timer
 
+### native-backup
+Run OpenClaw native backup (tar.gz archive with manifest) via OCBS skill.
+
+\`\`\`bash
+/ocbs native-backup --scope config --verify
+/ocbs native-backup --scope config+session --output ~/Backups
+\`\`\`
+
+**Parameters:**
+- \`--scope <scope>\` - Backup scope: \`config\`, \`config+session\`, \`config+session+workspace\`
+- \`--verify\` - Verify archive after creation
+- \`--output <dir>\` - Custom output directory (default: current directory)
+
+**Notes:**
+- Wraps \`openclaw backup create\` command
+- Creates full tar.gz archives (not incremental like OCBS backups)
+- Useful for pre-upgrade snapshots or archive exports
+- Requires OpenClaw CLI to be installed and in PATH
+
+### native-verify
+Verify a native backup archive.
+
+\`\`\`bash
+/ocbs native-verify ./2026-03-09T00-00-00.000Z-openclaw-backup.tar.gz
+\`\`\`
+
+**Parameters:**
+- \`--archive <path>\` - Path to the native backup archive
+
+**Notes:**
+- Wraps \`openclaw backup verify\` command
+- Validates archive structure and embedded manifest
+- Quick way to check if archive is intact before restore
+
 ## CLI Commands (outside of skill)
 
 These commands can be run directly from terminal:
 
 \`\`\`bash
-# Create backup
+# Create OCBS backup (incremental)
 ocbs backup --scope config --reason "Manual backup"
 
-# Restore from latest
+# Restore from latest OCBS backup
 ocbs restore --latest
 
-# Restore specific checkpoint
+# Restore specific OCBS checkpoint
 ocbs restore --checkpoint <id>
 
 # Create checkpoint with web server
@@ -119,6 +153,12 @@ ocbs status
 
 # Clean old backups
 ocbs clean --scope config+session
+
+# Native backup (tar.gz archive via OpenClaw)
+ocbs native-backup --scope config --verify
+
+# Verify native archive
+ocbs native-verify ./2026-03-09-openclaw-backup.tar.gz
 \`\`\`
 
 ## Storage

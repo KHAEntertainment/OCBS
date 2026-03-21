@@ -1,8 +1,11 @@
 """Skill module for OCBS."""
 
+import subprocess
+from pathlib import Path
+from typing import Optional
+
 from .core import OCBSCore, BackupScope
 from .serve import generate_restore_url, format_restore_message, start_restore_server
-from pathlib import Path
 
 
 class OCBSBackupSkill:
@@ -106,26 +109,104 @@ class OCBSBackupSkill:
     
     async def checkpoint(self, reason: str, serve: bool = False, port: Optional[int] = None) -> str:
         """Create a checkpoint for auto-restore.
-        
+
         Args:
             reason: Reason for the checkpoint
             serve: If True, start web server and return restore URL
-            
+
         Returns:
             Checkpoint ID or restore URL with instructions
         """
         try:
             checkpoint_id = self.core.create_checkpoint(reason)
-            
+
             if serve:
                 # Start restore server
                 start_restore_server(port=port)
                 # Return formatted message with auto-detected URL
                 return format_restore_message(checkpoint_id, reason)
-            
+
             return f"Checkpoint created: {checkpoint_id}\n  Reason: {reason}"
         except ValueError as e:
             return f"Error: {e}"
+
+    async def native_backup(self, scope: str = "config", verify: bool = False,
+                           output: str = None) -> str:
+        """Run OpenClaw native backup via OCBS skill.
+
+        Args:
+            scope: Backup scope (config, config+session, full)
+            verify: If True, verify archive after creation
+            output: Optional output directory path
+
+        Returns:
+            Status message with archive path
+        """
+        try:
+            # Build native backup command
+            args = ["openclaw", "backup", "create"]
+
+            # Map OCBS scopes to native flags
+            if scope == "config":
+                args.append("--only-config")
+            elif scope == "config+session":
+                args.append("--no-include-workspace")
+            # Full scope (config+session+workspace) uses default
+
+            if verify:
+                args.append("--verify")
+
+            if output:
+                args.extend(["--output", output])
+
+            # Run native backup
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout for large workspaces
+            )
+
+            if result.returncode != 0:
+                return f"Native backup failed: {result.stderr}"
+
+            return f"Native backup created successfully:\n{result.stdout}"
+
+        except subprocess.TimeoutExpired:
+            return "Error: Native backup timed out (10 minutes)"
+        except FileNotFoundError:
+            return "Error: openclaw command not found. Ensure OpenClaw is installed."
+        except Exception as e:
+            return f"Error running native backup: {e}"
+
+    async def native_verify(self, archive: str) -> str:
+        """Verify a native backup archive.
+
+        Args:
+            archive: Path to the native backup archive
+
+        Returns:
+            Verification result
+        """
+        try:
+            result = subprocess.run(
+                ["openclaw", "backup", "verify", archive],
+                capture_output=True,
+                text=True,
+                timeout=60  # 1 minute timeout for verification
+            )
+
+            if result.returncode != 0:
+                return f"Verification failed: {result.stderr}"
+
+            return f"✅ Archive verified successfully:\n{result.stdout}"
+
+        except subprocess.TimeoutExpired:
+            return "Error: Verification timed out"
+        except FileNotFoundError:
+            return "Error: openclaw command not found. Ensure OpenClaw is installed."
+        except Exception as e:
+            return f"Error verifying archive: {e}"
 
 
 # Skill manifest for OpenClaw skill system
@@ -205,6 +286,36 @@ SKILL_MANIFEST = {
                     "type": "boolean",
                     "default": False,
                     "description": "Start web server and return restore URL"
+                }
+            }
+        },
+        "native-backup": {
+            "description": "Run OpenClaw native backup",
+            "parameters": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["config", "config+session", "config+session+workspace"],
+                    "default": "config",
+                    "description": "Backup scope"
+                },
+                "verify": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Verify archive after creation"
+                },
+                "output": {
+                    "type": "string",
+                    "default": None,
+                    "description": "Output directory path"
+                }
+            }
+        },
+        "native-verify": {
+            "description": "Verify a native backup archive",
+            "parameters": {
+                "archive": {
+                    "type": "string",
+                    "description": "Path to the native backup archive"
                 }
             }
         }
