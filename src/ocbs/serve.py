@@ -3,7 +3,9 @@
 import os
 import socket
 import subprocess
+import threading
 import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Optional
 
@@ -178,8 +180,9 @@ def format_restore_message(checkpoint_id: str, reason: str = "") -> str:
     return "\n".join(lines)
 
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
+_SERVER_LOCK = threading.Lock()
+_RESTORE_SERVER: Optional[HTTPServer] = None
+_RESTORE_SERVER_THREAD: Optional[threading.Thread] = None
 
 
 class RestoreHandler(BaseHTTPRequestHandler):
@@ -250,10 +253,43 @@ def start_restore_server(port: int = 3456) -> HTTPServer:
     Returns:
         HTTP server instance
     """
-    server = HTTPServer(('0.0.0.0', port), RestoreHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server
+    global _RESTORE_SERVER, _RESTORE_SERVER_THREAD
+
+    with _SERVER_LOCK:
+        if _RESTORE_SERVER is not None and _RESTORE_SERVER_THREAD is not None:
+            if _RESTORE_SERVER_THREAD.is_alive() and _RESTORE_SERVER.server_port == port:
+                return _RESTORE_SERVER
+            _shutdown_restore_server_locked()
+
+        server = HTTPServer(('0.0.0.0', port), RestoreHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        _RESTORE_SERVER = server
+        _RESTORE_SERVER_THREAD = thread
+        return server
+
+
+def shutdown_restore_server() -> None:
+    """Stop the restore server if it is running."""
+    with _SERVER_LOCK:
+        _shutdown_restore_server_locked()
+
+
+def _shutdown_restore_server_locked() -> None:
+    """Stop the restore server while the caller holds the server lock."""
+    global _RESTORE_SERVER, _RESTORE_SERVER_THREAD
+
+    if _RESTORE_SERVER is None:
+        return
+
+    _RESTORE_SERVER.shutdown()
+    _RESTORE_SERVER.server_close()
+    if _RESTORE_SERVER_THREAD is not None:
+        _RESTORE_SERVER_THREAD.join(timeout=1)
+
+    _RESTORE_SERVER = None
+    _RESTORE_SERVER_THREAD = None
 
 
 if __name__ == '__main__':
