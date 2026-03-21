@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from .core import OCBSCore, BackupScope
+from .core import BackupSource, BackupScope, OCBSCore
 from .serve import format_restore_message, start_restore_server
 
 
@@ -25,17 +25,25 @@ def main(ctx, state_dir):
 @main.command()
 @click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
               default='config', help='Backup scope')
+@click.option(
+    '--source',
+    type=click.Choice(['direct', 'native']),
+    default=None,
+    help='Backup source: direct reads files directly, native wraps openclaw backup create',
+)
 @click.option('--reason', '-m', default='', help='Reason for backup')
 @click.pass_context
-def backup(ctx, scope, reason):
+def backup(ctx, scope, source, reason):
     """Create a backup."""
     core = ctx.obj['core']
     scope_enum = BackupScope(scope)
+    source_enum = BackupSource(source) if source else None
     
     try:
-        manifest = core.backup(scope_enum, reason)
+        manifest = core.backup(scope_enum, reason, source=source_enum)
         click.echo(f"Backup created: {manifest.backup_id}")
         click.echo(f"  Scope: {scope}")
+        click.echo(f"  Source: {(source_enum or core.get_default_source()).value}")
         click.echo(f"  Files: {len(manifest.paths)}")
         click.echo(f"  Reason: {reason or 'N/A'}")
     except Exception as e:

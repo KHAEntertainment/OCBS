@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from click.testing import CliRunner
 from ocbs.cli import main
-from ocbs.core import OCBSCore, BackupScope
+from ocbs.core import BackupSource, BackupScope, OCBSCore
 
 
 class TestCLI:
@@ -93,6 +93,46 @@ class TestFullWorkflow:
             assert result.exit_code == 0
             assert 'Checkpoint created' in result.output
             assert '_cp' in result.output
+
+    def test_backup_source_flag(self, monkeypatch):
+        """Test backup --source flag reaches the core."""
+
+        runner = CliRunner()
+        captured = {}
+
+        def fake_backup(self, scope, reason="", source=None):
+            captured["scope"] = scope
+            captured["reason"] = reason
+            captured["source"] = source
+            return type(
+                "Manifest",
+                (),
+                {"backup_id": "backup-1", "paths": ["a"], "scope": scope, "reason": reason},
+            )()
+
+        monkeypatch.setattr(OCBSCore, "backup", fake_backup)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = runner.invoke(
+                main,
+                [
+                    '--state-dir',
+                    tmpdir,
+                    'backup',
+                    '--scope',
+                    'config',
+                    '--source',
+                    'native',
+                    '--reason',
+                    'native test',
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert captured["scope"] == BackupScope.CONFIG
+        assert captured["reason"] == "native test"
+        assert captured["source"] == BackupSource.NATIVE
+        assert "Source: native" in result.output
 
 
 if __name__ == '__main__':

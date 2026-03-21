@@ -12,6 +12,7 @@ uv pip install -e .
 
 # Create a backup
 ocbs backup --scope config
+ocbs backup --scope config --source native
 
 # Restore from latest backup
 ocbs restore --latest
@@ -31,7 +32,8 @@ Once installed as a skill:
 
 ```
 /ocbs backup                    # Quick backup (config scope)
-/ocbs backup --scope full       # Full workspace backup
+/ocbs backup --scope config+session+workspace
+/ocbs backup --scope config --source native
 /ocbs restore --latest          # Restore from latest
 /ocbs list                      # Show available backups
 /ocbs status                    # Show storage status
@@ -42,6 +44,7 @@ Once installed as a skill:
 
 - **Incremental backups** — Only changed files are stored
 - **Content-addressable** — SHA-256 deduplication prevents duplicates
+- **Native backend option** — Can wrap `openclaw backup create` as a source
 - **Auto-cleanup** — Retains 7 daily, 4 weekly, 12 monthly backups
 - **Checkpoint system** — Manual restore points for risky changes
 - **Dual interface** — CLI commands + chat-based skill
@@ -63,7 +66,7 @@ python install_skill.py
 
 | Command | Description |
 |---------|-------------|
-| `ocbs backup --scope <scope>` | Create backup |
+| `ocbs backup --scope <scope> --source <source>` | Create backup |
 | `ocbs restore --latest` | Restore latest backup |
 | `ocbs restore --checkpoint <id>` | Restore checkpoint |
 | `ocbs list` | List all backups |
@@ -72,6 +75,27 @@ python install_skill.py
 | `ocbs checkpoint "reason"` | Create checkpoint |
 
 See [docs/setup.md](docs/setup.md) for detailed configuration.
+
+## Backup Sources
+
+- `direct` reads `~/.openclaw` files directly and stores changed content in OCBS packs.
+- `native` runs `openclaw backup create`, extracts the tar.gz, and stores the extracted files in the same OCBS chunk store.
+
+You can choose per backup:
+
+```bash
+ocbs backup --scope config --source direct
+ocbs backup --scope config+session --source native
+```
+
+Or set a default in `~/.config/ocbs/config.json`:
+
+```json
+{
+  "defaultSource": "native",
+  "nativeBackupDir": "/tmp/ocbs-native-cache"
+}
+```
 
 ## State Location
 

@@ -1,5 +1,6 @@
 """Server module for OCBS human-in-the-loop restore."""
 
+import shutil
 import socket
 import subprocess
 import urllib.parse
@@ -10,37 +11,43 @@ from typing import Optional
 def get_tailscale_ip() -> Optional[str]:
     """Get Tailscale IP address if available."""
     try:
-        # Try to get Tailscale IP using tailscale command
-        result = subprocess.run(
-            ['tailscale', 'ip', '-4'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        if result.returncode == 0:
-            ip = result.stdout.strip()
-            # Validate it's a Tailscale IP (100.x.x.x)
-            if ip.startswith('100.'):
-                return ip
+        # Resolve absolute path for tailscale command
+        tailscale_path = shutil.which('tailscale')
+        if tailscale_path:
+            # Try to get Tailscale IP using tailscale command
+            result = subprocess.run(
+                [tailscale_path, 'ip', '-4'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                ip = result.stdout.strip()
+                # Validate it's a Tailscale IP (100.x.x.x)
+                if ip.startswith('100.'):
+                    return ip
     except (subprocess.SubprocessError, FileNotFoundError, TimeoutError):
         pass
     
     # Fallback: check network interfaces
     try:
-        result = subprocess.run(
-            ['ip', 'addr', 'show'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        if result.returncode == 0:
-            for line in result.stdout.split('\n'):
-                if 'inet 100.' in line:
-                    # Extract IP from line like "inet 100.104.73.51/32..."
-                    parts = line.split()
-                    for part in parts:
-                        if part.startswith('100.'):
-                            return part.split('/')[0]
+        # Resolve absolute path for ip command
+        ip_path = shutil.which('ip')
+        if ip_path:
+            result = subprocess.run(
+                [ip_path, 'addr', 'show'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'inet 100.' in line:
+                        # Extract IP from line like "inet 100.104.73.51/32..."
+                        parts = line.split()
+                        for part in parts:
+                            if part.startswith('100.'):
+                                return part.split('/')[0]
     except (subprocess.SubprocessError, FileNotFoundError, TimeoutError):
         pass
     
@@ -178,6 +185,9 @@ class RestoreHandler(BaseHTTPRequestHandler):
         """Handle GET request."""
         if self.path.startswith('/restore/'):
             checkpoint_id = urllib.parse.unquote(self.path.split('/')[-1])
+            # HTML-escape checkpoint_id to prevent XSS
+            import html
+            safe_checkpoint_id = html.escape(checkpoint_id)
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
@@ -202,7 +212,7 @@ class RestoreHandler(BaseHTTPRequestHandler):
         <strong>Warning:</strong> Restoring will overwrite your current OpenClaw configuration.
     </div>
     <div class="box">
-        <p><strong>Checkpoint ID:</strong> <code>{checkpoint_id}</code></p>
+        <p><strong>Checkpoint ID:</strong> <code>{safe_checkpoint_id}</code></p>
         <p>Click below to restore from this checkpoint:</p>
         <button class="danger" onclick="restore()">Restore from Checkpoint</button>
         <button class="primary" onclick="cancel()">Cancel</button>
@@ -230,16 +240,24 @@ class RestoreHandler(BaseHTTPRequestHandler):
         pass
 
 
-def start_restore_server(port: int = 3456) -> HTTPServer:
+def start_restore_server(port: Optional[int] = 3456, bind_host: str = '127.0.0.1') -> HTTPServer:
     """Start the restore HTTP server.
     
     Args:
-        port: Port to listen on
+        port: Port to listen on. If None, the default (3456) is used.
+        bind_host: Host to bind to (default: 127.0.0.1 for security)
+                    Set to '0.0.0.0' to allow remote access (use with caution!)
         
     Returns:
         HTTP server instance
     """
-    server = HTTPServer(('0.0.0.0', port), RestoreHandler)
+    if port is None:
+        port = 3456
+    # Validate bind_host for security
+    if bind_host == '0.0.0.0':
+        print("Warning: Binding to 0.0.0.0 allows remote access. Use only on trusted networks.")
+    
+    server = HTTPServer((bind_host, port), RestoreHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
