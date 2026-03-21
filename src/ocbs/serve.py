@@ -1,5 +1,6 @@
 """Server module for OCBS human-in-the-loop restore."""
 
+import os
 import socket
 import subprocess
 import urllib.parse
@@ -104,6 +105,23 @@ def detect_connection_type() -> tuple[str, str]:
     return ('localhost', '127.0.0.1')
 
 
+def resolve_restore_endpoint(port: Optional[int] = None) -> tuple[str, str, int]:
+    """Resolve the scheme, host, and port used in restore URLs."""
+    env_host = os.environ.get('OCBS_SERVE_HOST')
+    if env_host and env_host.strip():
+        raw_value = env_host.strip().rstrip('/')
+        parsed = urllib.parse.urlparse(raw_value if '://' in raw_value else f'//{raw_value}')
+        scheme = parsed.scheme or 'http'
+        host = parsed.hostname or parsed.netloc or parsed.path
+        if parsed.port is not None:
+            return scheme, host, parsed.port
+        return scheme, host, port or 3456
+
+    conn_type, host = detect_connection_type()
+    scheme = 'https' if conn_type == 'https' else 'http'
+    return scheme, host, port or 3456
+
+
 def generate_restore_url(checkpoint_id: str, port: Optional[int] = None) -> str:
     """Generate restore URL with auto-detected connection type.
     
@@ -114,17 +132,10 @@ def generate_restore_url(checkpoint_id: str, port: Optional[int] = None) -> str:
     Returns:
         Full URL for restore page
     """
-    conn_type, host = detect_connection_type()
-    
-    # Use OCBS default port if not specified
-    if port is None:
-        port = 3456  # Default OCBS serve port
-    
-    # Build URL
-    scheme = 'https' if conn_type == 'https' else 'http'
+    scheme, host, resolved_port = resolve_restore_endpoint(port)
     encoded_id = urllib.parse.quote(checkpoint_id, safe='')
     
-    return f"{scheme}://{host}:{port}/restore/{encoded_id}"
+    return f"{scheme}://{host}:{resolved_port}/restore/{encoded_id}"
 
 
 def format_restore_message(checkpoint_id: str, reason: str = "") -> str:
@@ -137,8 +148,9 @@ def format_restore_message(checkpoint_id: str, reason: str = "") -> str:
     Returns:
         Formatted message with URL and instructions
     """
-    conn_type, host = detect_connection_type()
-    url = generate_restore_url(checkpoint_id)
+    scheme, host, port = resolve_restore_endpoint()
+    url = generate_restore_url(checkpoint_id, port=port)
+    connection_label = "CUSTOM" if os.environ.get('OCBS_SERVE_HOST', '').strip() else scheme.upper()
     
     lines = [
         "🔄 OCBS Checkpoint Created",
@@ -152,7 +164,7 @@ def format_restore_message(checkpoint_id: str, reason: str = "") -> str:
     lines.extend([
         f"",
         f"Restore URL: {url}",
-        f"Connection: {conn_type.upper()} ({host})",
+        f"Connection: {connection_label} ({host})",
         f"Expires: 24 hours",
         f"",
         f"To restore:",
@@ -166,8 +178,7 @@ def format_restore_message(checkpoint_id: str, reason: str = "") -> str:
     return "\n".join(lines)
 
 
-# Simple HTTP server for restore page (minimal implementation)
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 
 
