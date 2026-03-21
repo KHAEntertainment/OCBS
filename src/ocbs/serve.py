@@ -152,7 +152,7 @@ class RestorePageServer:
                 'restored': bool(row[5])
             }
     
-    def _mark_proceeded(self, token: str):
+    def _mark_proceeded(self, token: str, checkpoint_id: str):
         """Mark a token as proceeded and send webhook notification."""
         with sqlite3.connect(self.core.db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -161,9 +161,9 @@ class RestorePageServer:
                 "UPDATE serve_records SET proceeded = 1 WHERE token = ?",
                 (token,)
             )
-        
+
         # Send webhook notification to gateway
-        self._send_webhook_notification(token)
+        self._send_webhook_notification(token, checkpoint_id)
     
     def _write_proceed_notification(self, token: str, checkpoint_id: str = None):
         """Write a notification file when user clicks 'I received this'."""
@@ -243,15 +243,20 @@ class RestorePageServer:
         if notify_file.exists():
             notify_file.unlink()
     
-    def _mark_used(self, token: str):
-        """Mark a token as used (restore button clicked)."""
+    def _mark_used(self, token: str) -> bool:
+        """Mark a token as used (restore button clicked) atomically.
+
+        Returns True if the token was successfully marked as used,
+        False if it was already used or doesn't exist.
+        """
         with sqlite3.connect(self.core.db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
-            conn.execute(
-                "UPDATE serve_records SET used = 1 WHERE token = ?",
+            cursor = conn.execute(
+                "UPDATE serve_records SET used = 1 WHERE token = ? AND used = 0",
                 (token,)
             )
+            return cursor.rowcount > 0
     
     def _mark_restored(self, token: str):
         """Mark a restore as completed."""
@@ -608,46 +613,60 @@ class RestorePageServer:
         // Handle proceed form submission with AJAX
         document.getElementById('proceed-form').addEventListener('submit', function(e) {{
             e.preventDefault();
-            
+
             const form = this;
             const btn = document.getElementById('step1-btn');
             const token = form.token.value;
-            
-            // Change button to show work underway
-            btn.innerHTML = '✅ Work underway';
-            btn.disabled = true;
-            document.getElementById('work-timer').style.display = 'block';
-            
-            // Start elapsed timer
-            let seconds = 0;
-            const timerEl = document.getElementById('elapsed');
-            setInterval(function() {{
-                seconds++;
-                const mins = Math.floor(seconds / 60);
-                const secs = seconds % 60;
-                timerEl.textContent = mins + ':' + (secs < 10 ? '0' : '') + secs;
-            }}, 1000);
-            
+
             // Submit via fetch
             fetch('/proceed', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
                 body: 'token=' + encodeURIComponent(token)
             }})
-            .then(response => response.text())
+            .then(response => {{
+                if (!response.ok) {{
+                    throw new Error('Server returned ' + response.status);
+                }}
+                return response.text();
+            }})
             .then(html => {{
-                // Parse the response and update the status
+                // Parse the response and check for success
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
                 const alertDiv = doc.querySelector('.alert');
-                if (alertDiv) {{
+
+                // Only update UI if we got a valid success response
+                if (alertDiv && alertDiv.classList.contains('alert-info')) {{
+                    // Change button to show work underway
+                    btn.innerHTML = '✅ Work underway';
+                    btn.disabled = true;
+                    document.getElementById('work-timer').style.display = 'block';
+
+                    // Start elapsed timer
+                    let seconds = 0;
+                    const timerEl = document.getElementById('elapsed');
+                    setInterval(function() {{
+                        seconds++;
+                        const mins = Math.floor(seconds / 60);
+                        const secs = seconds % 60;
+                        timerEl.textContent = mins + ':' + (secs < 10 ? '0' : '') + secs;
+                    }}, 1000);
+
+                    // Update the status alert
                     const currentAlert = document.querySelector('.alert');
                     if (currentAlert) {{
                         currentAlert.innerHTML = alertDiv.innerHTML;
                     }}
+                }} else {{
+                    // Show error if we didn't get expected success response
+                    alert('Failed to proceed. Please try again or refresh the page.');
                 }}
             }})
-            .catch(err => console.error('Error:', err));
+            .catch(err => {{
+                console.error('Error:', err);
+                alert('Failed to proceed: ' + err.message);
+            }});
         }});
         
         // Handle restore form
@@ -729,13 +748,13 @@ class RestorePageServer:
                         if not serve_record:
                             self.send_error(404, "Invalid or expired token")
                             return
-                        
+
                         checkpoint_id = serve_record['checkpoint_id']
-                        
-                        # Mark as proceeded in DB
-                        server_instance._mark_proceeded(token)
-                        
-                        # Write notification file to notify agent
+
+                        # Mark as proceeded in DB and send webhook notification
+                        server_instance._mark_proceeded(token, checkpoint_id)
+
+                        # Write notification file to notify agent (fallback if webhook fails)
                         server_instance._write_proceed_notification(token, checkpoint_id)
                         
                         # Return styled HTML that updates UI via JavaScript
@@ -792,32 +811,40 @@ class RestorePageServer:
                 elif self.path == '/restore':
                     content_length = int(self.headers.get('Content-Length', 0))
                     body = self.rfile.read(content_length).decode()
-                    
+
                     # Parse form data
                     params = {}
                     for pair in body.split('&'):
                         if '=' in pair:
                             key, value = pair.split('=', 1)
                             params[key] = value
-                    
+
                     token = params.get('token')
                     if token:
-                        # Perform restore
-                        checkpoint_id = server_instance._validate_token(token)
+                        # Validate token (checks expiry)
+                        serve_record = server_instance._validate_token(token)
+                        if not serve_record:
+                            self.send_error(404, "Invalid or expired token")
+                            return
+
+                        # Atomically mark as used (single-use enforcement)
+                        if not server_instance._mark_used(token):
+                            self.send_error(409, "Token already used")
+                            return
+
+                        checkpoint_id = serve_record.get('checkpoint_id')
                         if checkpoint_id:
-                            checkpoint_id = checkpoint_id.get('checkpoint_id')
-                            if checkpoint_id:
-                                server_instance.core.restore(checkpoint_id=checkpoint_id)
-                                server_instance._mark_restored(token)
-                                
-                                self.send_response(200)
-                                self.send_header('Content-Type', 'text/html')
-                                self.end_headers()
-                                response = b"<html><body><h1>Restore Complete!</h1><p>Your system has been restored to the checkpoint.</p></body></html>"
-                                self.wfile.write(response)
-                                return
-                        
-                        self.send_error(404, "Invalid token")
+                            server_instance.core.restore(checkpoint_id=checkpoint_id)
+                            server_instance._mark_restored(token)
+
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'text/html')
+                            self.end_headers()
+                            response = b"<html><body><h1>Restore Complete!</h1><p>Your system has been restored to the checkpoint.</p></body></html>"
+                            self.wfile.write(response)
+                            return
+
+                        self.send_error(404, "Checkpoint not found")
                     else:
                         self.send_error(400, "Missing token")
                 
@@ -949,9 +976,13 @@ class RestorePageServer:
     
     def stop(self):
         """Stop the HTTP server."""
+        global _global_server
         if self.server:
             self.server.shutdown()
             self.server.server_close()
+        # Clear global reference if this is the global server
+        if _global_server is self:
+            _global_server = None
 
 
 # Global server instance for convenience functions
