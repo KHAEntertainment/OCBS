@@ -1,140 +1,226 @@
-# OCBS Backup Skill
+# OCBS Skill
 
-Incremental backup system for OpenClaw with restore capability.
+OpenClaw Backup System skill for chat-based backup and restore operations.
+
+## Installation
+
+```bash
+cd /home/openclaw/.openclaw/workspace-coder/OCBS
+python install_skill.py
+```
 
 ## Commands
 
-### `/ocbs backup [--scope <scope>] [--reason <text>]`
-Create an incremental backup.
+### backup
+Create a backup of OpenClaw configuration.
 
-| Parameter | Description |
-|-----------|-------------|
-| `--scope` | Backup scope: `minimal`, `config`, `config+session`, `config+session+workspace` |
-| `--reason` | Optional reason for the backup |
-
-**Examples:**
 ```bash
-/ocbs backup
-/ocbs backup --scope config+session
-/ocbs backup --scope config --reason "before system update"
+/ocbs backup --scope config --reason "Before update"
+/ocbs backup --scope config --source native --reason "Before upgrade"
 ```
 
-### `/ocbs restore --latest [--target <path>]`
-Restore from the most recent backup.
+**Parameters:**
+- `--scope <scope>` - Backup scope: `config`, `config+session`, `config+session+workspace`
+- `--source <source>` - Backup source: `direct` or `native`
+- `--reason <reason>` - Optional reason for the backup
 
-| Parameter | Description |
-|-----------|-------------|
-| `--latest` | Restore from latest backup (required) |
-| `--target` | Optional target directory |
+**Source behavior:**
+- `direct` reads OpenClaw files directly into OCBS chunk storage
+- `native` runs `openclaw backup create`, extracts the archive, then imports it into OCBS chunk storage
+- If the native CLI is unavailable, OCBS falls back to the direct source
 
-**Examples:**
+**Scope notes:**
+- `config` backs up OpenClaw configuration and credentials.
+- `config+session` adds OpenClaw session state.
+- `config+session+workspace` includes the full workspace.
+
+### restore
+Restore from a backup or checkpoint.
+
 ```bash
 /ocbs restore --latest
-/ocbs restore --latest --target /tmp/restore
+/ocbs restore --checkpoint <checkpoint_id>
 ```
 
-### `/ocbs restore --checkpoint <id>`
-Restore from a specific checkpoint.
+**Parameters:**
+- `--latest` - Restore from the latest backup (default)
+- `--checkpoint <id>` - Restore from a specific checkpoint
+- `--target <dir>` - Target directory for restore (default: `~/.openclaw`)
 
-| Parameter | Description |
-|-----------|-------------|
-| `--checkpoint` | Checkpoint ID (e.g., `20260211_120000_cp`) |
-
-**Examples:**
-```bash
-/ocbs restore --checkpoint 20260211_120000_cp
-```
-
-### `/ocbs status`
-Show current backup status and storage statistics.
-
-**Output includes:**
-- Total backups per scope
-- Total chunks stored
-- Pack file size
-- Latest backup timestamp
-
-### `/ocbs list [--scope <scope>]`
+### list
 List available backups.
 
-| Parameter | Description |
-|-----------|-------------|
-| `--scope` | Optional scope filter |
-
-**Example:**
 ```bash
 /ocbs list
 /ocbs list --scope config
 ```
 
-### `/ocbs clean [--scope <scope>]`
-Clean up old backups based on retention policy.
+**Parameters:**
+- `--scope <scope>` - Filter by scope
 
-Retention: 7 daily, 4 weekly, 12 monthly backups.
-
-| Parameter | Description |
-|-----------|-------------|
-| `--scope` | Optional scope filter |
-
-### `/ocbs checkpoint "<reason>" [--serve] [--expires <duration>] [--host <name>]`
-Create a checkpoint for potential auto-restore, with optional restore page serving.
-
-| Parameter | Description |
-|-----------|-------------|
-| `"<reason>"` | Reason for creating the checkpoint |
-| `--serve` | Generate a restore page URL for the checkpoint |
-| `--expires` | Link expiry duration (e.g., `4h`, `1d`); default `4h` |
-| `--host` | Host/IP for the restore URL (e.g., Tailscale IP); default `localhost` |
-
-**Examples:**
-```bash
-/ocbs checkpoint "before system update"
-/ocbs checkpoint "migrating configuration"
-/ocbs checkpoint "before update" --serve
-/ocbs checkpoint "before update" --serve --expires 24h --host 100.x.x.x
-```
-
-## Auto-Restore Checkpoints
-
-The checkpoint system allows creating manual restore points before risky operations:
-
-1. Create checkpoint: `/ocbs checkpoint "reason"`
-2. Make your changes
-3. If something breaks: `/ocbs restore --checkpoint <id>`
-4. If changes succeed: continue (checkpoint remains but inactive)
-
-Optionally generate a shareable restore page:
+### status
+Show backup status and statistics.
 
 ```bash
-/ocbs checkpoint "reason" --serve --expires 4h --host 100.x.x.x
+/ocbs status
 ```
 
-## Backup Scopes
+### clean
+Clean up old backups.
 
-| Scope | Contents | Storage Impact |
-|-------|----------|----------------|
-| `minimal` | Essential config only (openclaw.json, auth-profiles.json, credentials) | Minimal (~10-20 files) |
-| `config` | Config, credentials | Minimal |
-| `config+session` | Config + sessions | Moderate |
-| `config+session+workspace` | Everything | High |
+```bash
+/ocbs clean
+/ocbs clean --scope config
+```
 
-For Raspberry Pi and storage-limited devices, use `config` or `config+session` scopes.
+**Parameters:**
+- `--scope <scope>` - Filter by scope
 
-## State Location
+### checkpoint
+Create a checkpoint for auto-restore with optional web server.
 
-- **Directory:** `~/.config/ocbs/`
-- **Index:** SQLite database
-- **Packs:** Content-addressable chunk storage
+```bash
+/ocbs checkpoint "Before major change" --serve
+/ocbs checkpoint "Before major change" --serve --expiry 60 --host 100.90.22.52
+```
+
+**Parameters:**
+- `--reason <reason>` - Reason for the checkpoint
+- `--serve` - Start a restore web server and return a restore URL
+- `--expiry <minutes>` - Set how long the restore link remains valid
+- `--host <host>` - Override the host or IP used in the restore URL
+
+**Serve behavior:**
+- `--serve` starts the OCBS restore server so the checkpoint can be restored from a browser.
+- `--expiry` controls the restore-link lifetime shown to the operator.
+- `--host` overrides auto-detection when you need a specific Tailscale IP, localhost name, or custom domain.
+
+**Restore Workflow with Serve:**
+
+When `--serve` is used, a web server starts and a restore URL is returned:
+
+1. Copy the restore URL
+2. Visit it in a browser
+3. Review backup details
+4. Click "Restore" to proceed
+5. OpenClaw gateway restarts automatically
+
+The restore page shows:
+- Checkpoint ID
+- Reason for checkpoint
+- Files included in backup
+- Restore and Cancel buttons
+- Expiration timer based on `--expiry`
+
+### native-backup
+Run OpenClaw native backup (tar.gz archive with manifest) via OCBS skill.
+
+```bash
+/ocbs native-backup --scope config --verify
+/ocbs native-backup --scope config+session --output ~/Backups
+```
+
+**Parameters:**
+- `--scope <scope>` - Backup scope: `config`, `config+session`, `config+session+workspace`
+- `--verify` - Verify archive after creation
+- `--output <dir>` - Custom output directory (default: current directory)
+
+**Notes:**
+- Wraps `openclaw backup create` command
+- Creates full tar.gz archives (not incremental like OCBS backups)
+- Useful for pre-upgrade snapshots or archive exports
+- Requires OpenClaw CLI to be installed and in PATH
+
+### native-verify
+Verify a native backup archive.
+
+```bash
+/ocbs native-verify ./2026-03-09T00-00-00.000Z-openclaw-backup.tar.gz
+```
+
+**Parameters:**
+- `--archive <path>` - Path to the native backup archive
+
+**Notes:**
+- Wraps `openclaw backup verify` command
+- Validates archive structure and embedded manifest
+- Quick way to check if archive is intact before restore
+
+## CLI Commands (outside of skill)
+
+These commands can be run directly from terminal:
+
+```bash
+# Create OCBS backup (incremental)
+ocbs backup --scope config --reason "Quick safety snapshot"
+ocbs backup --scope config --reason "Manual backup"
+ocbs backup --scope config --source native --reason "Pre-upgrade snapshot"
+
+# Restore from latest OCBS backup
+ocbs restore --latest
+
+# Restore specific OCBS checkpoint
+ocbs restore --checkpoint <id>
+
+# Create checkpoint with web server
+ocbs checkpoint "Pre-update snapshot" --serve --expiry 60 --host 100.90.22.52
+
+# List backups
+ocbs list
+
+# Show status
+ocbs status
+
+# Clean old backups
+ocbs clean --scope config+session
+
+# Native backup (tar.gz archive via OpenClaw)
+ocbs native-backup --scope config --verify
+
+# Verify native archive
+ocbs native-verify ./2026-03-09-openclaw-backup.tar.gz
+```
+
+## Storage
+
+OCBS stores all data in `~/.config/ocbs/` by default:
+
+```text
+~/.config/ocbs/
+├── index.db           # SQLite index (backups, chunks, checkpoints, serve_records)
+├── packs/             # Content-addressable chunk storage
+├── config.json        # Integration settings
+└── backup.log         # Cron job output
+```
+
+## Connection Detection
+
+The `--host` parameter and web server auto-detect the best connection type:
+
+1. **Custom domain** - If configured in OpenClaw gateway config
+2. **Tailscale** - If Tailscale IP (`100.x.x.x`) is available
+3. **Localhost** - Fallback for local access
 
 ## Integration
 
-The skill integrates with OpenClaw's:
-- **Cron:** Automated scheduled backups
-- **Heartbeat:** Health checks for auto-restore
-- **Messaging:** Status notifications
+### Cron
+Automatic backups can be configured via cron:
 
-## See Also
+```bash
+ocbs integration setup-cron --schedule daily --scope config
+```
 
-- **CLI:** Run `ocbs --help` for CLI reference
-- **Docs:** [docs/setup.md](../docs/setup.md) for detailed configuration
-- **Repo:** https://github.com/KHAEntertainment/OCBS
+### Heartbeat
+Health check for auto-restore can be configured:
+
+```bash
+ocbs integration setup-heartbeat --enabled --timeout 30
+```
+
+## Troubleshooting
+
+### "Too many open files" error
+This was fixed in v0.1.0 with batch processing. Restore now handles large backups (13,000+ files) without hitting file descriptor limits.
+
+### Schema mismatch
+The `serve_records` table uses `checkpoint_id` (not `backup_id`) to match checkpoint table schema.

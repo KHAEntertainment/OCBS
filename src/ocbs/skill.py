@@ -1,7 +1,5 @@
 """Skill module for OCBS.
 
-Agent Instructions for Restore Page URL:
-=========================================
 When serving restore pages, ensure the URL is accessible to the user:
 
 1. For local access (same machine): host="localhost" (default)
@@ -23,7 +21,12 @@ import asyncio
 import os
 import threading
 from datetime import timedelta
+import subprocess
 from pathlib import Path
+from typing import Optional
+
+from .core import BackupSource, BackupScope, OCBSCore
+from .serve import generate_restore_url, format_restore_message, start_restore_server
 
 from .core import OCBSCore, BackupScope
 from .serve import RestorePageServer
@@ -41,20 +44,37 @@ class OCBSBackupSkill:
         self.server_thread = None
         self._serve_lock = threading.Lock()
     
-    async def backup(self, scope: str = "config", reason: str = "") -> str:
+    async def backup(
+        self,
+        scope: str = "config",
+        reason: str = "",
+        source: str = None,
+    ) -> str:
         """Create a backup.
         
         Args:
             scope: Backup scope (config, config+session, config+session+workspace)
             reason: Optional reason for the backup
+            source: Backup source (direct or native)
             
         Returns:
             Status message
         """
         try:
             scope_enum = BackupScope(scope)
-            manifest = self.core.backup(scope_enum, reason)
-            return f"Backup created: {manifest.backup_id}\n  Scope: {scope}\n  Files: {len(manifest.paths)}"
+            source_enum = BackupSource(source) if source else None
+            manifest = self.core.backup(scope_enum, reason, source=source_enum)
+            effective_source = source_enum or self.core.get_default_source()
+            return (
+                f"Backup created: {manifest.backup_id}\n"
+                f"  Scope: {scope}\n"
+                f"  Source: {effective_source.value}\n"
+                f"  Files: {len(manifest.paths)}"
+            )
+        except ValueError as e:
+            return f"Error creating backup: {e}"
+        except FileNotFoundError:
+            return "Error creating backup: openclaw command not found for native source"
         except Exception as e:
             return f"Error creating backup: {e}"
     
@@ -131,62 +151,25 @@ class OCBSBackupSkill:
         self.core.cleanup(scope_enum)
         return "Cleanup completed"
     
-    def _resolve_host(self, host: str) -> str:
-        """Resolve effective host, honoring OCBS_SERVE_HOST env var if set."""
-        env_host = os.environ.get("OCBS_SERVE_HOST", "").strip()
-        return env_host if env_host else host
+    async def checkpoint(self, reason: str, serve: bool = False, port: Optional[int] = None) -> str:
+        """Create a checkpoint for auto-restore.
 
-    def _ensure_serve_server(self, host: str) -> None:
-        """Start a RestorePageServer if one is not already running."""
-        with self._serve_lock:
-            if self.serve_server is None or self.server_thread is None or not self.server_thread.is_alive():
-                if self.serve_server is not None:
-                    try:
-                        self.serve_server.stop()
-                    except Exception as e:
-                        print(f"Warning: Failed to stop previous serve server: {e}")
-                # Bind to all interfaces when host is not local so remote clients can connect
-                local_hosts = {"localhost", "127.0.0.1", "::1"}
-                bind_host = "127.0.0.1" if host in local_hosts else "0.0.0.0"
-                self.serve_server = RestorePageServer(
-                    state_dir=self.core.state_dir, host=host, bind_host=bind_host
-                )
-                self.server_thread = threading.Thread(target=self.serve_server.start, daemon=True)
-                self.server_thread.start()
-
-    async def checkpoint(self, reason: str, serve: bool = False, 
-                        expires: str = "4h", host: str = "localhost") -> str:
-        """Create a checkpoint for auto-restore, optionally serving a restore page.
-        
         Args:
             reason: Reason for the checkpoint
-            serve: If True, create a restore page
-            expires: Expiry time for the restore page (e.g., "4h", "1d")
-            host: Host for the restore URL (use Tailscale IP for remote access)
-                  Can also be set via OCBS_SERVE_HOST environment variable
-            
+            serve: If True, start web server and return restore URL
+
         Returns:
             Checkpoint ID and optionally the restore URL
         """
         try:
             checkpoint_id = self.core.create_checkpoint(reason)
-            
+
             if serve:
-                # Parse expiry
-                expires_hours = self._parse_expiry(expires)
-                if expires_hours <= 0:
-                    return f"Checkpoint created but invalid expiry: {expires}"
-                
-                effective_host = self._resolve_host(host)
-                self._ensure_serve_server(effective_host)
-                token = self.serve_server.serve_checkpoint(checkpoint_id, expires_hours)
-                url = self.serve_server.get_restore_url(token)
-                
-                return (f"Checkpoint created: {checkpoint_id}\n"
-                        f"  Reason: {reason}\n"
-                        f"  Restore URL: {url}\n"
-                        f"  Expires: {expires}")
-            
+                # Start restore server
+                start_restore_server(port=port)
+                # Return formatted message with auto-detected URL
+                return format_restore_message(checkpoint_id, reason)
+
             return f"Checkpoint created: {checkpoint_id}\n  Reason: {reason}"
         except ValueError as e:
             return f"Error: {e}"
@@ -277,6 +260,84 @@ class OCBSBackupSkill:
 
         return "\n".join(result_lines)
 
+    async def native_backup(self, scope: str = "config", verify: bool = False,
+                           output: str = None) -> str:
+        """Run OpenClaw native backup via OCBS skill.
+
+        Args:
+            scope: Backup scope (config, config+session, full)
+            verify: If True, verify archive after creation
+            output: Optional output directory path
+
+        Returns:
+            Status message with archive path
+        """
+        try:
+            # Build native backup command
+            args = ["openclaw", "backup", "create"]
+
+            # Map OCBS scopes to native flags
+            if scope == "config":
+                args.append("--only-config")
+            elif scope == "config+session":
+                args.append("--no-include-workspace")
+            # Full scope (config+session+workspace) uses default
+
+            if verify:
+                args.append("--verify")
+
+            if output:
+                args.extend(["--output", output])
+
+            # Run native backup
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout for large workspaces
+            )
+
+            if result.returncode != 0:
+                return f"Native backup failed: {result.stderr}"
+
+            return f"Native backup created successfully:\n{result.stdout}"
+
+        except subprocess.TimeoutExpired:
+            return "Error: Native backup timed out (10 minutes)"
+        except FileNotFoundError:
+            return "Error: openclaw command not found. Ensure OpenClaw is installed."
+        except Exception as e:
+            return f"Error running native backup: {e}"
+
+    async def native_verify(self, archive: str) -> str:
+        """Verify a native backup archive.
+
+        Args:
+            archive: Path to the native backup archive
+
+        Returns:
+            Verification result
+        """
+        try:
+            result = subprocess.run(
+                ["openclaw", "backup", "verify", archive],
+                capture_output=True,
+                text=True,
+                timeout=60  # 1 minute timeout for verification
+            )
+
+            if result.returncode != 0:
+                return f"Verification failed: {result.stderr}"
+
+            return f"✅ Archive verified successfully:\n{result.stdout}"
+
+        except subprocess.TimeoutExpired:
+            return "Error: Verification timed out"
+        except FileNotFoundError:
+            return "Error: openclaw command not found. Ensure OpenClaw is installed."
+        except Exception as e:
+            return f"Error verifying archive: {e}"
+
 
 # Skill manifest for OpenClaw skill system
 SKILL_MANIFEST = {
@@ -297,6 +358,12 @@ SKILL_MANIFEST = {
                     "type": "string",
                     "default": "",
                     "description": "Reason for backup"
+                },
+                "source": {
+                    "type": "string",
+                    "enum": ["direct", "native"],
+                    "default": None,
+                    "description": "Backup source"
                 }
             }
         },
@@ -394,6 +461,36 @@ SKILL_MANIFEST = {
                     "type": "boolean",
                     "default": True,
                     "description": "Clear notifications after reading"
+                }
+            }
+        },
+        "native-backup": {
+            "description": "Run OpenClaw native backup",
+            "parameters": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["config", "config+session", "config+session+workspace"],
+                    "default": "config",
+                    "description": "Backup scope"
+                },
+                "verify": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Verify archive after creation"
+                },
+                "output": {
+                    "type": "string",
+                    "default": None,
+                    "description": "Output directory path"
+                }
+            }
+        },
+        "native-verify": {
+            "description": "Verify a native backup archive",
+            "parameters": {
+                "archive": {
+                    "type": "string",
+                    "description": "Path to the native backup archive"
                 }
             }
         }

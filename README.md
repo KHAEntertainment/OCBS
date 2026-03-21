@@ -1,84 +1,123 @@
-# OCBS — OpenClaw Backup System
+# OCBS - OpenClaw Backup System
 
-An incremental, file-level backup system for OpenClaw that integrates with skills, crons, and heartbeats while remaining update-agnostic.
+[![ClawHub](https://img.shields.io/badge/clawhub?style=flat-square)](https://clawhub.com/skills/ocbs)
+[![PyPI](https://img.shields.io/pypi/v/ocbs?style=flat-square)](https://pypi.org/project/ocbs/)
 
-## Quick Start
+Incremental backup system for OpenClaw with restore capability and native backup integration.
+
+## Installation
+
+### via NPM (Recommended)
 
 ```bash
-# Install
-cd /home/openclaw/.openclaw/workspace-coder/OCBS
-uv venv && source .venv/bin/activate
-uv pip install -e .
-
-# Create a backup
-ocbs backup --scope config
-
-# Restore from latest backup
-ocbs restore --latest
+pipx install ocbs
 ```
 
-## What It Backs Up
+### via ClowHub Skill
 
-| Scope | Contents |
-|-------|----------|
-| `config` | OpenClaw config, credentials |
-| `config+session` | Config + agent sessions |
-| `config+session+workspace` | Everything |
+OCBS is available as a skill in [ClawHub](https://clawhub.com/skills/ocbs):
 
-## Chat Commands (via OpenClaw Skill)
-
-Once installed as a skill:
-
-```
-/ocbs backup                    # Quick backup (config scope)
-/ocbs backup --scope full       # Full workspace backup
-/ocbs restore --latest          # Restore from latest
-/ocbs list                      # Show available backups
-/ocbs status                    # Show storage status
-/ocbs checkpoint "before update" # Create restore point
+```bash
+clawhub install ocbs
 ```
 
 ## Features
 
-- **Incremental backups** — Only changed files are stored
-- **Content-addressable** — SHA-256 deduplication prevents duplicates
-- **Auto-cleanup** — Retains 7 daily, 4 weekly, 12 monthly backups
-- **Checkpoint system** — Manual restore points for risky changes
-- **Dual interface** — CLI commands + chat-based skill
-- **Cron/heartbeat ready** — Automated backups and health checks
+- **Incremental backups** - Content-addressable chunk storage with SHA-256 deduplication
+- **Multiple scopes** - config, config+session, config+session+workspace, minimal
+- **Checkpoint system** - Create restore points with auto-restore
+- **Restore server** - Web UI for human-in-the-loop restore workflow
+- **Native backup integration** - Wrap OpenClaw's `openclaw backup create` as storage backend
+- **Automatic cleanup** - Retention policy (7 daily, 4 weekly, 12 monthly)
+- **Skill interface** - Available as OpenClaw skill for chat commands
 
-## Installation
+## Usage
 
 ```bash
-# Install package
-uv pip install -e .
+# Create incremental backup
+ocbs backup --scope config --reason "Before major update"
 
-# Install OpenClaw skill
-python install_skill.py
+# Create checkpoint with restore page
+ocbs checkpoint "Pre-upgrade snapshot" --serve --expires 4h
 
-# Restart OpenClaw to load the skill
+# Restore from latest backup
+ocbs restore --latest
+
+# Restore from specific checkpoint
+ocbs restore --checkpoint 20260211_120000_cp
+
+# List all backups
+ocbs list --scope config+session
+
+# Show status
+ocbs status
+
+# Clean up old backups
+ocbs clean --scope config
 ```
 
-## CLI Reference
+## Configuration
 
-| Command | Description |
-|---------|-------------|
-| `ocbs backup --scope <scope>` | Create backup |
-| `ocbs restore --latest` | Restore latest backup |
-| `ocbs restore --checkpoint <id>` | Restore checkpoint |
-| `ocbs list` | List all backups |
-| `ocbs status` | Show storage statistics |
-| `ocbs clean` | Remove old backups |
-| `ocbs checkpoint "reason"` | Create checkpoint |
+OCBS stores data in `~/.config/ocbs/`:
 
-See [docs/setup.md](docs/setup.md) for detailed configuration.
+```bash
+# Backup directory
+~/.config/ocbs/backups/
 
-## State Location
+# Database
+~/.config/ocbs/ocbs.db
 
-- Default: `~/.config/ocbs/`
-- Pack files: `~/.config/ocbs/packs/`
-- SQLite index: `~/.config/ocbs/index.db`
+# State files
+~/.config/ocbs/state/
+```
+
+## Native Backup Integration
+
+OCBS can optionally use OpenClaw's native backup as a storage source:
+
+```bash
+# Using native backup as backend
+ocbs backup --source native --scope config+session
+
+# Or set as default in config
+echo 'defaultSource = "native"' >> ~/.config/ocbs/config.json
+```
+
+When using native source, OCBS:
+1. Runs `openclaw backup create` to generate tar.gz archive
+2. Extracts and chunks the archive into OCBS incremental storage
+3. All OCBS features work (checkpoints, auto-cleanup, etc.)
+
+## Development
+
+```bash
+# Install development dependencies
+pip install -e '.[dev]'
+
+# Run tests
+pytest
+
+# Build distribution
+python -m build
+
+# Install locally for testing
+pip install -e .
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests
+5. Submit a pull request
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) file for details
+
+## Links
+
+- [GitHub Repository](https://github.com/KHAEntertainment/OCBS)
+- [ClawHub Skill](https://clawhub.com/skills/ocbs)
+- [Issues](https://github.com/KHAEntertainment/OCBS/issues)

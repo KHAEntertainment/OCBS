@@ -2,34 +2,58 @@
 Web server for serving OCBS restore pages with token-based authentication.
 """
 
-import hashlib
-import html as html_module
-import json
-import os
-import secrets
-import sqlite3
-import threading
-from datetime import datetime, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import shutil
+import socket
+import subprocess
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
 from .core import OCBSCore
 
-
-class RestorePageServer:
-    """HTTP server for serving restore pages with token authentication."""
+def get_tailscale_ip() -> Optional[str]:
+    """Get Tailscale IP address if available."""
+    try:
+        # Resolve absolute path for tailscale command
+        tailscale_path = shutil.which('tailscale')
+        if tailscale_path:
+            # Try to get Tailscale IP using tailscale command
+            result = subprocess.run(
+                [tailscale_path, 'ip', '-4'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                ip = result.stdout.strip()
+                # Validate it's a Tailscale IP (100.x.x.x)
+                if ip.startswith('100.'):
+                    return ip
+    except (subprocess.SubprocessError, FileNotFoundError, TimeoutError):
+        pass
     
-    def __init__(self, state_dir: Optional[Path] = None, port: int = 18790, host: str = "localhost",
-                 bind_host: str = "127.0.0.1"):
-        self.port = port
-        self.host = host
-        self.bind_host = bind_host
-        self.core = OCBSCore(state_dir=state_dir)
-        self.server: Optional[HTTPServer] = None
-        self._serve_thread: Optional[threading.Thread] = None
-        self._active_tokens: dict[str, dict] = {}  # token -> {checkpoint_id, expires_at, used}
+    # Fallback: check network interfaces
+    try:
+        # Resolve absolute path for ip command
+        ip_path = shutil.which('ip')
+        if ip_path:
+            result = subprocess.run(
+                [ip_path, 'addr', 'show'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if 'inet 100.' in line:
+                        # Extract IP from line like "inet 100.104.73.51/32..."
+                        parts = line.split()
+                        for part in parts:
+                            if part.startswith('100.'):
+                                return part.split('/')[0]
+    except (subprocess.SubprocessError, FileNotFoundError, TimeoutError):
+        pass
     
     def _generate_token(self) -> str:
         """Generate a secure random token."""
@@ -682,52 +706,16 @@ class RestorePageServer:
 </html>
 """
     
-    def start(self, background: bool = False):
-        """Start the HTTP server.
-        
-        Args:
-            background: If True, run in background thread. If False, block.
-        """
-        global server_instance
-        server_instance = self
-        
-        class RestoreHandler(BaseHTTPRequestHandler):
-            def log_message(self, format, *args):
-                pass  # Suppress logging
-            
-            def do_GET(self):
-                if self.path.startswith('/restore/'):
-                    token = self.path[9:]  # Remove '/restore/'
-                    serve_record = server_instance._validate_token(token)
-                    
-                    if not serve_record:
-                        self.send_error(404, "Invalid or expired link")
-                        return
-                    
-                    checkpoint_info = server_instance._get_checkpoint_info(
-                        serve_record['checkpoint_id']
-                    )
-                    
-                    if not checkpoint_info:
-                        self.send_error(404, "Checkpoint not found")
-                        return
-                    
-                    expires_at = serve_record['expires_at']
-                    is_expired = expires_at < datetime.now()
-                    is_used = serve_record['used']
-                    is_proceeded = serve_record['proceeded']
-                    is_restored = serve_record['restored']
-                    
-                    html = server_instance._get_html_page(
-                        token, checkpoint_info, expires_at, is_expired, is_used, is_proceeded, is_restored
-                    )
-                    
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/html')
-                    self.end_headers()
-                    self.wfile.write(html.encode())
-                else:
-                    self.send_error(404, "Not Found")
+    def do_GET(self):
+        """Handle GET request."""
+        if self.path.startswith('/restore/'):
+            checkpoint_id = urllib.parse.unquote(self.path.split('/')[-1])
+            # HTML-escape checkpoint_id to prevent XSS
+            import html
+            safe_checkpoint_id = html.escape(checkpoint_id)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
             
             def do_POST(self):
                 if self.path == '/proceed':
@@ -785,11 +773,15 @@ class RestorePageServer:
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>✓ Work Underway</h1>
-        <p>The agent has been notified. You may proceed with your changes.</p>
-        {proceed_status_html}
-        <button class="btn" onclick="window.close()">Close This Tab</button>
+    <h1>🔄 OCBS Restore</h1>
+    <div class="box warning">
+        <strong>Warning:</strong> Restoring will overwrite your current OpenClaw configuration.
+    </div>
+    <div class="box">
+        <p><strong>Checkpoint ID:</strong> <code>{safe_checkpoint_id}</code></p>
+        <p>Click below to restore from this checkpoint:</p>
+        <button class="danger" onclick="restore()">Restore from Checkpoint</button>
+        <button class="primary" onclick="cancel()">Cancel</button>
     </div>
     <script>
         // Try to update parent window and close popup if opened as separate window
@@ -819,160 +811,33 @@ class RestorePageServer:
                             key, value = pair.split('=', 1)
                             params[key] = value
 
-                    token = params.get('token')
-                    if token:
-                        # Validate token (checks expiry)
-                        serve_record = server_instance._validate_token(token)
-                        if not serve_record:
-                            self.send_error(404, "Invalid or expired token")
-                            return
-
-                        # Atomically mark as used (single-use enforcement)
-                        if not server_instance._mark_used(token):
-                            self.send_error(409, "Token already used")
-                            return
-
-                        checkpoint_id = serve_record.get('checkpoint_id')
-                        if checkpoint_id:
-                            server_instance.core.restore(checkpoint_id=checkpoint_id)
-                            server_instance._mark_restored(token)
-
-                            self.send_response(200)
-                            self.send_header('Content-Type', 'text/html')
-                            self.end_headers()
-                            response = b"<html><body><h1>Restore Complete!</h1><p>Your system has been restored to the checkpoint.</p></body></html>"
-                            self.wfile.write(response)
-                            return
-
-                        self.send_error(404, "Checkpoint not found")
-                    else:
-                        self.send_error(400, "Missing token")
-                
-                elif self.path == '/restart':
-                    # Non-destructive restart - just restart gateway without restore
-                    content_length = int(self.headers.get('Content-Length', 0))
-                    body = self.rfile.read(content_length).decode()
-                    
-                    # Parse form data
-                    params = {}
-                    for pair in body.split('&'):
-                        if '=' in pair:
-                            key, value = pair.split('=', 1)
-                            params[key] = value
-                    
-                    token = params.get('token')
-                    if token:
-                        # Validate token
-                        serve_record = server_instance._validate_token(token)
-                        if not serve_record:
-                            self.send_error(404, "Invalid or expired token")
-                            return
-                        
-                        # Try to restart the gateway gracefully
-                        restart_ok = False
-                        restart_error = None
-                        try:
-                            import shutil
-                            import subprocess
-                            systemctl_path = shutil.which('systemctl')
-                            if systemctl_path:
-                                # Use systemctl to restart
-                                subprocess.Popen(
-                                    [systemctl_path, 'restart', 'openclaw-gateway'],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL
-                                )
-                                restart_ok = True
-                            else:
-                                openclaw_path = shutil.which('openclaw')
-                                if openclaw_path:
-                                    subprocess.Popen(
-                                        [openclaw_path, 'gateway', 'restart'],
-                                        stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL
-                                    )
-                                    restart_ok = True
-                                else:
-                                    restart_error = "Neither systemctl nor openclaw found in PATH"
-                        except Exception as e:
-                            restart_error = str(e)
-                            print(f"Warning: Gateway restart failed: {e}")
-                        
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'text/html')
-                        self.end_headers()
-
-                        if restart_ok:
-                            restart_html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OCBS - Gateway Restarted</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-               min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
-        .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; width: 100%;
-                     box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }
-        h1 { color: #28a745; margin-bottom: 16px; }
-        p { color: #666; margin-bottom: 24px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Gateway restarted</h1>
-        <p>The gateway is restarting. Please wait a moment and then refresh the page.</p>
-    </div>
-    <script>
-        setTimeout(function() { window.location.reload(); }, 5000);
-    </script>
-</body>
-</html>"""
-                        else:
-                            error_msg = restart_error if restart_error else "Unknown error"
-                            restart_html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OCBS - Restart Failed</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-               min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }}
-        .container {{ background: white; border-radius: 16px; padding: 40px; max-width: 500px; width: 100%;
-                     box-shadow: 0 20px 60px rgba(0,0,0,0.3); text-align: center; }}
-        h1 {{ color: #dc3545; margin-bottom: 16px; }}
-        p {{ color: #666; margin-bottom: 24px; }}
-        .error {{ color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb;
-                 border-radius: 4px; padding: 12px; margin-top: 16px; word-break: break-word; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Restart failed: {error_msg}</h1>
-        <p>The gateway could not be restarted.</p>
-    </div>
-</body>
-</html>"""
-                        self.wfile.write(restart_html.encode())
-                    else:
-                        self.send_error(400, "Missing token")
-                else:
-                    self.send_error(404, "Not Found")
+def start_restore_server(port: Optional[int] = 3456, bind_host: str = '127.0.0.1') -> HTTPServer:
+    """Start the restore HTTP server.
+    
+    Args:
+        port: Port to listen on. If None, the default (3456) is used.
+        bind_host: Host to bind to (default: 127.0.0.1 for security)
+                    Set to '0.0.0.0' to allow remote access (use with caution!)
         
-        # Create and start the server
-        # Bind to configured address; default is localhost only for security
-        self.server = HTTPServer((self.bind_host, self.port), RestoreHandler)
-        
-        # Run in background thread if requested
-        if background:
-            self._serve_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-            self._serve_thread.start()
-        else:
-            # Block and serve forever
-            self.server.serve_forever()
+    Returns:
+        HTTP server instance
+    """
+    if port is None:
+        port = 3456
+    # Validate bind_host for security
+    if bind_host == '0.0.0.0':
+        print("Warning: Binding to 0.0.0.0 allows remote access. Use only on trusted networks.")
+    
+    server = HTTPServer((bind_host, port), RestoreHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+if __name__ == '__main__':
+    # Test detection
+    conn_type, host = detect_connection_type()
+    print(f"Detected connection: {conn_type} ({host})")
     
     def stop(self):
         """Stop the HTTP server."""

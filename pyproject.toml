@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "clawhub>=0.1.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,8 +13,16 @@ dependencies = [
     "xxhash>=3.0.0",
 ]
 
+[project.optional-dependencies]
+clawhub = "clawhub>=0.1.0"
+
 [project.scripts]
 ocbs = "ocbs.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/KHAEntertainment/OCBS"
+Documentation = "https://github.com/KHAEntertainment/OCBS#readme"
+Repository = "https://github.com/KHAEntertainment/OCBS"
 
 [dependency-groups]
 dev = [

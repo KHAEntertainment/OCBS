@@ -3,12 +3,15 @@ Tests for OCBS core functionality.
 """
 
 import os
+import json
+import sqlite3
+import tarfile
 import tempfile
 import pytest
 from pathlib import Path
 from datetime import datetime
 
-from ocbs.core import OCBSCore, BackupScope, BackupManifest
+from ocbs.core import BackupManifest, BackupScope, BackupSource, OCBSCore
 
 
 @pytest.fixture
@@ -198,6 +201,84 @@ class TestOCBSCore:
             if original_home:
                 os.environ['HOME'] = original_home
 
+    def test_run_native_backup_dry_run(self, ocbs, monkeypatch):
+        """Test native backup dry-run path."""
+
+        class Result:
+            returncode = 0
+            stdout = json.dumps({"archive": "/tmp/native-backup.tar.gz"})
+            stderr = ""
+
+        def fake_run(args, capture_output, text, timeout, check):
+            assert "--dry-run" in args
+            assert "--json" in args
+            return Result()
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        archive = ocbs._run_native_backup(BackupScope.CONFIG, dry_run=True)
+        assert archive == Path("/tmp/native-backup.tar.gz")
+
+    def test_chunk_archive(self, ocbs, temp_state_dir):
+        """Test chunking a native archive into OCBS storage."""
+
+        archive_path = temp_state_dir / "native.tar.gz"
+        source_dir = temp_state_dir / "archive-src"
+        source_dir.mkdir()
+        (source_dir / ".openclaw").mkdir()
+        (source_dir / ".openclaw" / "config").mkdir()
+        (source_dir / ".openclaw" / "config" / "settings.json").write_text('{"test": true}')
+        (source_dir / "manifest.json").write_text('{"ignored": true}')
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(source_dir / ".openclaw", arcname=".openclaw")
+            tar.add(source_dir / "manifest.json", arcname="manifest.json")
+
+        manifest = ocbs._chunk_archive(archive_path, BackupScope.CONFIG, "native test")
+
+        assert manifest.scope == BackupScope.CONFIG
+        assert ".openclaw/config/settings.json" in manifest.paths
+        assert "manifest.json" not in manifest.paths
+        assert len(manifest.chunk_ids) == 1
+
+    def test_backup_native_falls_back_to_direct(self, ocbs, sample_files, temp_state_dir, monkeypatch):
+        """Test native source falls back to direct when CLI is unavailable."""
+
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        def fake_native(scope, dry_run=False):
+            raise FileNotFoundError("missing openclaw")
+
+        monkeypatch.setattr(ocbs, "_run_native_backup", fake_native)
+
+        try:
+            manifest = ocbs.backup(BackupScope.CONFIG, "fallback test", source=BackupSource.NATIVE)
+            assert any('config' in path for path in manifest.paths)
+            assert manifest.reason == "fallback test"
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+    def test_config_default_source(self, temp_state_dir):
+        """Test config loading for default source."""
+
+        config_path = temp_state_dir / "config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "defaultSource": "native",
+                    "nativeBackupDir": str(temp_state_dir / "native-cache"),
+                }
+            )
+        )
+
+        ocbs = OCBSCore(state_dir=temp_state_dir)
+
+        assert ocbs._resolve_backup_source(None) == BackupSource.NATIVE
+        assert ocbs.native_backup_dir == temp_state_dir / "native-cache"
+        assert ocbs.native_backup_dir.exists()
+
 
 class TestRestore:
     """Tests for restore functionality with batch processing."""
@@ -318,6 +399,55 @@ class TestRestore:
             if original_home:
                 os.environ['HOME'] = original_home
 
+    def test_restore_rejects_db_absolute_paths(self, ocbs, temp_state_dir):
+        """Test restore skips unsafe absolute paths from the database."""
+        import os
+
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            openclaw_home = temp_state_dir / ".openclaw"
+            config_dir = openclaw_home / "config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            config_file = config_dir / "settings.json"
+            config_file.write_text('{"safe": true}')
+
+            backup = ocbs.backup(BackupScope.CONFIG, "security test")
+
+            with sqlite3.connect(ocbs.db_path) as conn:
+                conn.execute(
+                    """UPDATE backup_files
+                       SET file_path = ?
+                       WHERE backup_id = ? AND file_path = ?""",
+                    ("/tmp/ocbs-escape.txt", backup.backup_id, ".openclaw/config/settings.json"),
+                )
+
+            config_file.unlink()
+            escaped_path = Path("/tmp/ocbs-escape.txt")
+            if escaped_path.exists():
+                escaped_path.unlink()
+
+            result = ocbs.restore(backup.backup_id)
+
+            assert result is True
+            assert not config_file.exists()
+            assert not escaped_path.exists()
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
+
+class TestServeRecords:
+    """Tests for serve record accessors."""
+
+    def test_get_checkpoint_serves_handles_missing_table(self, ocbs):
+        """Test serve lookups recover if the serve_records table is absent."""
+
+        with sqlite3.connect(ocbs.db_path) as conn:
+            conn.execute("DROP TABLE serve_records")
+
+        assert ocbs.get_checkpoint_serves() == []
+
 
 class TestBackupScope:
     """Tests for BackupScope enum."""
@@ -327,6 +457,16 @@ class TestBackupScope:
         assert BackupScope.CONFIG.value == "config"
         assert BackupScope.CONFIG_SESSION.value == "config+session"
         assert BackupScope.CONFIG_SESSION_WORKSPACE.value == "config+session+workspace"
+
+
+class TestBackupSource:
+    """Tests for BackupSource enum."""
+
+    def test_source_values(self):
+        """Test source enum values."""
+
+        assert BackupSource.DIRECT.value == "direct"
+        assert BackupSource.NATIVE.value == "native"
 
 
 class TestFileCollection:
