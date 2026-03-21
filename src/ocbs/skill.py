@@ -37,7 +37,7 @@ class OCBSBackupSkill:
             scope_enum = BackupScope(scope)
             source_enum = BackupSource(source) if source else None
             manifest = self.core.backup(scope_enum, reason, source=source_enum)
-            effective_source = source_enum or self.core._resolve_backup_source(None)
+            effective_source = source_enum or self.core.get_default_source()
             return (
                 f"Backup created: {manifest.backup_id}\n"
                 f"  Scope: {scope}\n"

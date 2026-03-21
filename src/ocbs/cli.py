@@ -43,7 +43,7 @@ def backup(ctx, scope, source, reason):
         manifest = core.backup(scope_enum, reason, source=source_enum)
         click.echo(f"Backup created: {manifest.backup_id}")
         click.echo(f"  Scope: {scope}")
-        click.echo(f"  Source: {(source_enum or core._resolve_backup_source(None)).value}")
+        click.echo(f"  Source: {(source_enum or core.get_default_source()).value}")
         click.echo(f"  Files: {len(manifest.paths)}")
         click.echo(f"  Reason: {reason or 'N/A'}")
     except Exception as e:
