@@ -21,7 +21,7 @@ class OCBSBackupSkill:
         """Create a backup.
         
         Args:
-            scope: Backup scope (config, config+session, config+session+workspace)
+            scope: Backup scope (minimal, config, config+session, config+session+workspace)
             reason: Optional reason for the backup
             
         Returns:
@@ -135,7 +135,7 @@ class OCBSBackupSkill:
         """Run OpenClaw native backup via OCBS skill.
 
         Args:
-            scope: Backup scope (config, config+session, full)
+            scope: Backup scope (minimal, config, config+session, full)
             verify: If True, verify archive after creation
             output: Optional output directory path
 
@@ -220,7 +220,7 @@ SKILL_MANIFEST = {
             "parameters": {
                 "scope": {
                     "type": "string",
-                    "enum": ["config", "config+session", "config+session+workspace"],
+                    "enum": ["minimal", "config", "config+session", "config+session+workspace"],
                     "default": "config",
                     "description": "Backup scope"
                 },
@@ -294,7 +294,7 @@ SKILL_MANIFEST = {
             "parameters": {
                 "scope": {
                     "type": "string",
-                    "enum": ["config", "config+session", "config+session+workspace"],
+                    "enum": ["minimal", "config", "config+session", "config+session+workspace"],
                     "default": "config",
                     "description": "Backup scope"
                 },
