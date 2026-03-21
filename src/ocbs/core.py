@@ -435,7 +435,8 @@ class OCBSCore:
     def restore(self, backup_id: Optional[str] = None, checkpoint_id: Optional[str] = None,
                 target_dir: Optional[Path] = None) -> bool:
         """Restore from a backup or checkpoint."""
-        target_dir = target_dir or get_openclaw_home()
+        # Files are stored relative to Path.home(), so default target_dir is home
+        target_dir = target_dir or Path.home()
 
         # Resolve backup_id from checkpoint if needed
         if checkpoint_id:
@@ -449,6 +450,8 @@ class OCBSCore:
                 row = cursor.fetchone()
                 if row:
                     backup_id = row[0]
+                else:
+                    raise ValueError(f"Checkpoint not found: {checkpoint_id}")
 
         if not backup_id:
             latest = self.get_latest_backup()
@@ -471,10 +474,13 @@ class OCBSCore:
                 (backup_id,)
             )
             files = cursor.fetchall()
+            if not files:
+                raise ValueError(f"No files found for backup_id: {backup_id}")
 
         # Process files with single connection for chunk lookups
         # Process in batches to avoid memory pressure with large backups
         BATCH_SIZE = 500
+        resolved_target = target_dir.resolve()
 
         for i in range(0, len(files), BATCH_SIZE):
             batch = files[i:i + BATCH_SIZE]
@@ -486,6 +492,16 @@ class OCBSCore:
                 for file_path, pack_file, offset, chunk_size in batch:
                     pack_path = self.packs_dir / pack_file
 
+                    # Reject absolute paths and path traversal attempts
+                    fp = Path(file_path)
+                    if fp.is_absolute():
+                        print(f"Warning: Skipping absolute file_path in backup: {file_path}")
+                        continue
+                    candidate = (target_dir / file_path).resolve()
+                    if not (str(candidate) + os.sep).startswith(str(resolved_target) + os.sep):
+                        print(f"Warning: Skipping path that escapes target_dir: {file_path}")
+                        continue
+
                     # Read exactly chunk_size bytes from pack
                     try:
                         with open(pack_path, 'rb') as f:
@@ -493,7 +509,7 @@ class OCBSCore:
                             content = f.read(chunk_size)
 
                         # Write file
-                        full_path = target_dir / file_path
+                        full_path = candidate
                         full_path.parent.mkdir(parents=True, exist_ok=True)
                         full_path.write_bytes(content)
                     except (FileNotFoundError, OSError) as e:
@@ -582,6 +598,18 @@ class OCBSCore:
         with sqlite3.connect(self.db_path, timeout=30) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS serve_records (
+                    token TEXT PRIMARY KEY,
+                    checkpoint_id TEXT,
+                    created_at TEXT,
+                    expires_at TEXT,
+                    used INTEGER DEFAULT 0,
+                    proceeded INTEGER DEFAULT 0,
+                    restored INTEGER DEFAULT 0,
+                    FOREIGN KEY (checkpoint_id) REFERENCES checkpoints(checkpoint_id)
+                )
+            """)
             cursor = conn.execute(
                 """SELECT token, checkpoint_id, created_at, expires_at, used, proceeded, restored
                    FROM serve_records WHERE checkpoint_id = ? ORDER BY created_at DESC""",

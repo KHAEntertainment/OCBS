@@ -3,6 +3,7 @@ Web server for serving OCBS restore pages with token-based authentication.
 """
 
 import hashlib
+import html as html_module
 import json
 import os
 import secrets
@@ -14,15 +15,17 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
-from core import OCBSCore
+from .core import OCBSCore
 
 
 class RestorePageServer:
     """HTTP server for serving restore pages with token authentication."""
     
-    def __init__(self, state_dir: Optional[Path] = None, port: int = 18790, host: str = "localhost"):
+    def __init__(self, state_dir: Optional[Path] = None, port: int = 18790, host: str = "localhost",
+                 bind_host: str = "127.0.0.1"):
         self.port = port
         self.host = host
+        self.bind_host = bind_host
         self.core = OCBSCore(state_dir=state_dir)
         self.server: Optional[HTTPServer] = None
         self._serve_thread: Optional[threading.Thread] = None
@@ -321,8 +324,9 @@ class RestorePageServer:
         hours = int(remaining.total_seconds() // 3600)
         minutes = int((remaining.total_seconds() % 3600) // 60)
         
-        reason = checkpoint_info.get('reason', 'No reason provided')
+        reason = html_module.escape(checkpoint_info.get('reason', 'No reason provided'))
         checkpoint_timestamp = datetime.fromisoformat(checkpoint_info['checkpoint_timestamp'])
+        escaped_scope = html_module.escape(checkpoint_info.get('scope', ''))
         
         status_message = ""
         step1_button_class = "btn-step"
@@ -551,7 +555,7 @@ class RestorePageServer:
             </div>
             <div class="info-item">
                 <span class="info-label">Scope</span>
-                <span class="info-value">{checkpoint_info['scope']}</span>
+                <span class="info-value">{escaped_scope}</span>
             </div>
         </div>
         
@@ -720,12 +724,16 @@ class RestorePageServer:
                     
                     token = params.get('token')
                     if token:
+                        # Validate token FIRST before taking any action
+                        serve_record = server_instance._validate_token(token)
+                        if not serve_record:
+                            self.send_error(404, "Invalid or expired token")
+                            return
+                        
+                        checkpoint_id = serve_record['checkpoint_id']
+                        
                         # Mark as proceeded in DB
                         server_instance._mark_proceeded(token)
-                        
-                        # Get the checkpoint_id for notification
-                        serve_record = server_instance._validate_token(token)
-                        checkpoint_id = serve_record['checkpoint_id'] if serve_record else None
                         
                         # Write notification file to notify agent
                         server_instance._write_proceed_notification(token, checkpoint_id)
@@ -834,31 +842,34 @@ class RestorePageServer:
                             return
                         
                         # Try to restart the gateway gracefully
+                        restart_ok = False
+                        restart_error = None
                         try:
+                            import shutil
                             import subprocess
-                            # Check if we can use systemctl
-                            result = subprocess.run(
-                                ['which', 'systemctl'],
-                                capture_output=True,
-                                text=True
-                            )
-                            if result.returncode == 0:
+                            systemctl_path = shutil.which('systemctl')
+                            if systemctl_path:
                                 # Use systemctl to restart
                                 subprocess.Popen(
-                                    ['systemctl', 'restart', 'openclaw-gateway'],
+                                    [systemctl_path, 'restart', 'openclaw-gateway'],
                                     stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL
                                 )
+                                restart_ok = True
                             else:
-                                # Try openclaw CLI
-                                subprocess.Popen(
-                                    ['openclaw', 'gateway', 'restart'],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL
-                                )
+                                openclaw_path = shutil.which('openclaw')
+                                if openclaw_path:
+                                    subprocess.Popen(
+                                        [openclaw_path, 'gateway', 'restart'],
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL
+                                    )
+                                    restart_ok = True
+                                else:
+                                    restart_error = "Neither systemctl nor openclaw found in PATH"
                         except Exception as e:
-                            # If restart fails, just show a message
-                            pass
+                            restart_error = str(e)
+                            print(f"Warning: Gateway restart failed: {e}")
                         
                         self.send_response(200)
                         self.send_header('Content-Type', 'text/html')
@@ -896,8 +907,8 @@ class RestorePageServer:
                     self.send_error(404, "Not Found")
         
         # Create and start the server
-        # Bind to all interfaces for accessibility; URL host is what the user sees
-        self.server = HTTPServer(('0.0.0.0', self.port), RestoreHandler)
+        # Bind to configured address; default is localhost only for security
+        self.server = HTTPServer((self.bind_host, self.port), RestoreHandler)
         
         # Run in background thread if requested
         if background:
