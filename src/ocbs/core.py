@@ -442,9 +442,10 @@ class OCBSCore:
                     (checkpoint_id,)
                 )
                 row = cursor.fetchone()
-                if row:
-                    backup_id = row[0]
-        
+                if row is None:
+                    raise ValueError("Checkpoint not found")
+                backup_id = row[0]
+
         if not backup_id:
             latest = self.get_latest_backup()
             if latest:

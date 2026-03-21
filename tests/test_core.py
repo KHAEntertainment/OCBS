@@ -262,6 +262,20 @@ class TestRestore:
         finally:
             if original_home:
                 os.environ['HOME'] = original_home
+
+    def test_restore_missing_checkpoint_raises(self, ocbs, sample_files, temp_state_dir):
+        """Test restore errors when an explicit checkpoint does not exist."""
+        original_home = os.environ.get('HOME')
+        os.environ['HOME'] = str(temp_state_dir)
+
+        try:
+            ocbs.backup(BackupScope.CONFIG, "test restore")
+
+            with pytest.raises(ValueError, match="Checkpoint not found"):
+                ocbs.restore(checkpoint_id="missing-checkpoint")
+        finally:
+            if original_home:
+                os.environ['HOME'] = original_home
     
     def test_restore_from_checkpoint(self, ocbs, sample_files, temp_state_dir):
         """Test restore from checkpoint."""
