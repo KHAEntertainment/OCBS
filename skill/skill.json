@@ -16,7 +16,7 @@
       "parameters": {
         "scope": {
           "type": "string",
-          "enum": ["config", "config+session", "config+session+workspace"],
+          "enum": ["minimal", "config", "config+session", "config+session+workspace"],
           "default": "config",
           "description": "Backup scope to use"
         },

@@ -20,11 +20,13 @@ The agent should determine the appropriate host based on:
 """
 
 import asyncio
+import os
+import threading
 from datetime import timedelta
 from pathlib import Path
 
-from core import OCBSCore, BackupScope
-from serve import RestorePageServer
+from .core import OCBSCore, BackupScope
+from .serve import RestorePageServer
 
 
 class OCBSBackupSkill:
@@ -36,6 +38,8 @@ class OCBSBackupSkill:
     def __init__(self):
         self.core = OCBSCore()
         self.serve_server = None
+        self.server_thread = None
+        self._serve_lock = threading.Lock()
     
     async def backup(self, scope: str = "config", reason: str = "") -> str:
         """Create a backup.
@@ -127,6 +131,29 @@ class OCBSBackupSkill:
         self.core.cleanup(scope_enum)
         return "Cleanup completed"
     
+    def _resolve_host(self, host: str) -> str:
+        """Resolve effective host, honoring OCBS_SERVE_HOST env var if set."""
+        env_host = os.environ.get("OCBS_SERVE_HOST", "").strip()
+        return env_host if env_host else host
+
+    def _ensure_serve_server(self, host: str) -> None:
+        """Start a RestorePageServer if one is not already running."""
+        with self._serve_lock:
+            if self.serve_server is None or self.server_thread is None or not self.server_thread.is_alive():
+                if self.serve_server is not None:
+                    try:
+                        self.serve_server.stop()
+                    except Exception as e:
+                        print(f"Warning: Failed to stop previous serve server: {e}")
+                # Bind to all interfaces when host is not local so remote clients can connect
+                local_hosts = {"localhost", "127.0.0.1", "::1"}
+                bind_host = "127.0.0.1" if host in local_hosts else "0.0.0.0"
+                self.serve_server = RestorePageServer(
+                    state_dir=self.core.state_dir, host=host, bind_host=bind_host
+                )
+                self.server_thread = threading.Thread(target=self.serve_server.start, daemon=True)
+                self.server_thread.start()
+
     async def checkpoint(self, reason: str, serve: bool = False, 
                         expires: str = "4h", host: str = "localhost") -> str:
         """Create a checkpoint for auto-restore, optionally serving a restore page.
@@ -150,15 +177,10 @@ class OCBSBackupSkill:
                 if expires_hours <= 0:
                     return f"Checkpoint created but invalid expiry: {expires}"
                 
-                # Start serve server and create restore page
-                self.serve_server = RestorePageServer(state_dir=self.core.state_dir, host=host)
+                effective_host = self._resolve_host(host)
+                self._ensure_serve_server(effective_host)
                 token = self.serve_server.serve_checkpoint(checkpoint_id, expires_hours)
                 url = self.serve_server.get_restore_url(token)
-                
-                # Start server in background
-                import threading
-                server_thread = threading.Thread(target=self.serve_server.start)
-                server_thread.start()
                 
                 return (f"Checkpoint created: {checkpoint_id}\n"
                         f"  Reason: {reason}\n"
@@ -187,20 +209,15 @@ class OCBSBackupSkill:
             if expires_hours <= 0:
                 return f"Invalid expiry: {expires}"
             
-            # Start serve server and create restore page
-            self.serve_server = RestorePageServer(state_dir=self.core.state_dir, host=host)
+            effective_host = self._resolve_host(host)
+            self._ensure_serve_server(effective_host)
             token = self.serve_server.serve_checkpoint(checkpoint, expires_hours)
             url = self.serve_server.get_restore_url(token)
-            
-            # Start server in background
-            import threading
-            server_thread = threading.Thread(target=self.serve_server.start)
-            server_thread.start()
             
             return (f"Restore page created for checkpoint: {checkpoint}\n"
                     f"  URL: {url}\n"
                     f"  Expires: {expires}\n"
-                    f"  Host: {host}")
+                    f"  Host: {effective_host}")
         except ValueError as e:
             return f"Error: {e}"
     
