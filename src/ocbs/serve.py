@@ -11,6 +11,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 from .core import OCBSCore
+from .notifications import NotificationManager
 
 def get_tailscale_ip() -> Optional[str]:
     """Get Tailscale IP address if available."""
@@ -211,37 +212,16 @@ def get_tailscale_ip() -> Optional[str]:
             json.dump(notification, f)
     
     def _send_webhook_notification(self, token: str, checkpoint_id: str = None):
-        """Send webhook notification to gateway when user clicks proceed."""
-        import urllib.request
-        import urllib.error
-        
-        # Get webhook URL from environment or use default
-        webhook_url = os.environ.get('OCBS_WEBHOOK_URL', 'http://localhost:18789/hooks/ocbs-proceed')
-        webhook_token = os.environ.get('OCBS_WEBHOOK_TOKEN', 'ocbs-webhook-secret')
-        
-        payload = json.dumps({
-            "message": f"OCBS Proceed: User acknowledged checkpoint {checkpoint_id}. Token: {token}",
-            "token": token,
-            "checkpoint_id": checkpoint_id,
-            "action": "proceed"
-        }).encode('utf-8')
-        
-        req = urllib.request.Request(
-            webhook_url,
-            data=payload,
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {webhook_token}'
-            },
-            method='POST'
-        )
-        
-        try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                print(f"Webhook notification sent: {response.status}")
-        except urllib.error.URLError as e:
-            print(f"Webhook notification failed: {e}")
-            # Fall back to file notification
+        """Send webhook notification to gateway when user clicks proceed.
+
+        Uses the proper /hooks/wake endpoint with 'text' field format
+        instead of the incorrect /hooks/ocbs-proceed endpoint.
+        """
+        notifier = NotificationManager(state_dir=self.state_dir)
+        success = notifier.notify_proceed(checkpoint_id, token)
+
+        if not success:
+            # Fall back to file notification if webhook fails
             self._write_proceed_notification(token, checkpoint_id)
     
     def get_pending_proceed_notifications(self) -> list[dict]:
