@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-clawhub = "clawhub>=0.1.0"
+clawhub = ["clawhub>=0.1.0"]
 
 [project.scripts]
 ocbs = "ocbs.cli:main"

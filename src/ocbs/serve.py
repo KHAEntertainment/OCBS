@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import urllib.parse
+from http.server import HTTPServer
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
@@ -838,52 +839,18 @@ if __name__ == '__main__':
     # Test detection
     conn_type, host = detect_connection_type()
     print(f"Detected connection: {conn_type} ({host})")
-    
-    def stop(self):
-        """Stop the HTTP server."""
-        global _global_server
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
-        # Clear global reference if this is the global server
-        if _global_server is self:
-            _global_server = None
-
-
-# Global server instance for convenience functions
-_global_server: Optional[RestorePageServer] = None
-
-
-def start_restore_server(port: int = 18790, host: str = "localhost",
-                        bind_host: str = "127.0.0.1", state_dir: Optional[Path] = None):
-    """Start the restore server in the background."""
-    global _global_server
-    if _global_server is None:
-        _global_server = RestorePageServer(state_dir=state_dir, port=port, host=host, bind_host=bind_host)
-        _global_server.start(background=True)
-    return _global_server
 
 
 def format_restore_message(checkpoint_id: str, reason: str,
                           port: int = 18790, host: str = "localhost") -> str:
     """Format a restore message with URL for a checkpoint."""
-    global _global_server
-
-    # Ensure server is running
-    if _global_server is None:
-        start_restore_server(port=port, host=host)
-
-    # Create serve record for this checkpoint
-    token = _global_server.serve_checkpoint(checkpoint_id)
-    url = _global_server.get_restore_url(token)
-
-    message = f"""
-Checkpoint created: {checkpoint_id}
+    return f"""Checkpoint created: {checkpoint_id}
 Reason: {reason}
 
-Restore URL (expires in 4 hours):
-{url}
-
-Share this URL to allow emergency restore of this checkpoint.
+Restore functionality requires server setup.
 """
-    return message.strip()
+
+
+def generate_restore_url(checkpoint_id: str, port: int = 18790, host: str = "localhost") -> str:
+    """Generate a restore URL for a checkpoint."""
+    return f"http://{host}:{port}/restore?checkpoint={checkpoint_id}"

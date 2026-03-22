@@ -221,10 +221,8 @@ class OCBSCore:
 
         base_dir = target_dir.resolve()
         full_path = (base_dir / rel_path).resolve()
-        try:
-            full_path.relative_to(base_dir)
-        except ValueError as exc:
-            raise ValueError(f"restore path escapes target directory: {file_path}") from exc
+        if not full_path.is_relative_to(base_dir):
+            raise ValueError(f"restore path escapes target directory: {file_path}")
 
         return full_path
 
