@@ -362,6 +362,14 @@ def get_tailscale_ip() -> Optional[str]:
         step1_button_text = "Step 1: I received this - start changes"
         step1_button_disabled = ""
         work_underway_display = "none"
+
+        restore_btn_text = "Restore Backup & Restart"
+        if escaped_scope == "config":
+            restore_btn_text = "Restore Configuration & Restart"
+        elif "workspace" in escaped_scope:
+            restore_btn_text = "Full Restore & Restart"
+        elif "session" in escaped_scope:
+            restore_btn_text = "Restore Config + Sessions & Restart"
         
         if is_restored:
             status_message = """
@@ -615,7 +623,7 @@ def get_tailscale_ip() -> Optional[str]:
                 <input type="hidden" name="token" value="{token}">
                 <button type="submit" class="btn btn-restart" {step1_button_disabled}
                         onclick="return confirm('Restart the gateway without restoring? This may help resolve minor issues.');">
-                    🔄 Restart Gateway
+                    &#8635; Restart Gateway Only
                 </button>
             </form>
             
@@ -624,7 +632,7 @@ def get_tailscale_ip() -> Optional[str]:
                 <button type="submit" class="btn btn-danger" {step1_button_disabled} 
                         onclick="return confirm('Are you sure you want to RESTORE? This will revert all changes!');">
                     <span class="step-label step2">Step 2</span>
-                    🔴 Restore Backup & Restart
+                    &#9888;&#65039; {restore_btn_text}
                     <span class="spinner" id="restore-spinner"></span>
                 </button>
             </form>
