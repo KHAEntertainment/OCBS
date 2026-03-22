@@ -1,0 +1,9 @@
+{
+  "name": "@karkinos/ocbs",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "pytest",
+    "install-skill": "python install_skill.py"
+  }
+}
