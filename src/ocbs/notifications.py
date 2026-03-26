@@ -47,6 +47,18 @@ class NotificationManager:
         if token:
             return token
 
+        # Try to get from OCBS config (where save_notification_config stores it)
+        ocbs_config_file = self.state_dir / "config.json"
+        if ocbs_config_file.exists():
+            try:
+                with open(ocbs_config_file) as f:
+                    config = json.load(f)
+                    token = config.get("webhook_token")
+                    if token:
+                        return token
+            except (json.JSONDecodeError, OSError):
+                pass
+
         # Try to get from OpenClaw config
         openclaw_config = Path.home() / ".openclaw" / "openclaw.json"
         if openclaw_config.exists():
@@ -250,22 +262,22 @@ class NotificationManager:
         text = f"OCBS Proceed: User acknowledged checkpoint {checkpoint_id}"
         success = self.notify(text)
 
-        # Also write a specific proceed notification file for agent polling
-        if success:
-            try:
-                notify_dir = self.state_dir / "proceed_notifications"
-                notify_dir.mkdir(parents=True, exist_ok=True)
-                proceed_file = notify_dir / f"{token}.json"
-                proceed_data = {
-                    "token": token,
-                    "checkpoint_id": checkpoint_id,
-                    "proceeded_at": datetime.now().isoformat(),
-                    "status": "pending_agent_poll",
-                }
-                with open(proceed_file, "w") as f:
-                    json.dump(proceed_data, f, indent=2)
-            except Exception as e:
-                logger.warning(f"Failed to write proceed notification file: {e}")
+        # Always write a specific proceed notification file for agent polling
+        # This ensures the proceed file is created regardless of webhook success
+        try:
+            notify_dir = self.state_dir / "proceed_notifications"
+            notify_dir.mkdir(parents=True, exist_ok=True)
+            proceed_file = notify_dir / f"{token}.json"
+            proceed_data = {
+                "token": token,
+                "checkpoint_id": checkpoint_id,
+                "proceeded_at": datetime.now().isoformat(),
+                "status": "pending_agent_poll",
+            }
+            with open(proceed_file, "w") as f:
+                json.dump(proceed_data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write proceed notification file: {e}")
 
         return success
 
