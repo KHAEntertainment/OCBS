@@ -363,13 +363,52 @@ def get_tailscale_ip() -> Optional[str]:
         step1_button_disabled = ""
         work_underway_display = "none"
 
-        restore_btn_text = "Restore Backup & Restart"
-        if escaped_scope == "config":
-            restore_btn_text = "Restore Configuration & Restart"
-        elif "workspace" in escaped_scope:
-            restore_btn_text = "Full Restore & Restart"
-        elif "session" in escaped_scope:
-            restore_btn_text = "Restore Config + Sessions & Restart"
+        # Get raw scope (before HTML escaping) to determine what data exists
+        raw_scope = checkpoint_info.get('scope', '')
+
+        # Stage 2: Partial restore (config, or config+session if workspace exists)
+        if raw_scope == "config":
+            stage2_label = "Restore Configuration & Restart"
+        elif raw_scope == "config+session":
+            stage2_label = "Restore Config + Sessions & Restart"
+        elif raw_scope == "config+session+workspace":
+            stage2_label = "Restore Config + Sessions & Restart"
+        else:
+            stage2_label = "Restore Backup & Restart"
+
+        # Stage 3: Full restore (only for backups with workspace/session data)
+        has_extended_data = "session" in raw_scope or "workspace" in raw_scope
+        stage3_label = "Full Restore & Restart"
+
+        # Build stage2 button HTML
+        stage2_html = f"""
+            <form action="/restore" method="POST">
+                <input type="hidden" name="token" value="{token}">
+                <input type="hidden" name="restore_scope" value="partial">
+                <button type="submit" class="btn btn-danger" {step1_button_disabled}
+                        onclick="return confirm('Are you sure you want to RESTORE? This will revert configuration changes!');">
+                    <span class="step-label step2">Step 2</span>
+                    &#9888;&#65039; {stage2_label}
+                    <span class="spinner" id="restore-spinner"></span>
+                </button>
+            </form>
+        """
+
+        # Build stage3 button HTML (only if session/workspace data exists)
+        stage3_html = ""
+        if has_extended_data:
+            stage3_html = f"""
+            <form action="/restore" method="POST">
+                <input type="hidden" name="token" value="{token}">
+                <input type="hidden" name="restore_scope" value="full">
+                <button type="submit" class="btn btn-danger" {step1_button_disabled}
+                        onclick="return confirm('Are you sure you want to do a FULL RESTORE? This will revert ALL changes including workspace data!');">
+                    <span class="step-label step2">Step 3</span>
+                    &#9888;&#65039; {stage3_label}
+                    <span class="spinner" id="full-restore-spinner"></span>
+                </button>
+            </form>
+        """
         
         if is_restored:
             status_message = """
@@ -626,16 +665,10 @@ def get_tailscale_ip() -> Optional[str]:
                     &#8635; Restart Gateway Only
                 </button>
             </form>
-            
-            <form action="/restore" method="POST">
-                <input type="hidden" name="token" value="{token}">
-                <button type="submit" class="btn btn-danger" {step1_button_disabled} 
-                        onclick="return confirm('Are you sure you want to RESTORE? This will revert all changes!');">
-                    <span class="step-label step2">Step 2</span>
-                    &#9888;&#65039; {restore_btn_text}
-                    <span class="spinner" id="restore-spinner"></span>
-                </button>
-            </form>
+
+            {stage2_html}
+
+            {stage3_html}
         </div>
         
         <p class="expiry">Link expires in {hours}h {minutes}m</p>
@@ -701,13 +734,16 @@ def get_tailscale_ip() -> Optional[str]:
             }});
         }});
         
-        // Handle restore form
-        document.querySelector('form[action="/restore"]').addEventListener('submit', function(e) {{
-            if (!confirm('Are you sure? This will restore from the checkpoint.')) {{
-                e.preventDefault();
-            }} else {{
-                document.getElementById('restore-spinner').style.display = 'inline-block';
-            }}
+        // Handle restore forms (both partial and full)
+        document.querySelectorAll('form[action="/restore"]').forEach(function(form) {{
+            form.addEventListener('submit', function(e) {{
+                const scope = this.querySelector('input[name="restore_scope"]').value;
+                const spinnerId = (scope === 'full') ? 'full-restore-spinner' : 'restore-spinner';
+                const spinner = document.getElementById(spinnerId);
+                if (spinner) {{
+                    spinner.style.display = 'inline-block';
+                }}
+            }});
         }});
     </script>
 </body>
