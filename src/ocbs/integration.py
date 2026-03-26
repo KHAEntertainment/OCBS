@@ -147,7 +147,7 @@ class OCBSIntegration:
     def get_integration_status(self) -> dict:
         """Get full integration status."""
         config = self.get_config()
-        
+
         return {
             'auto_backup': {
                 'enabled': config.get('auto_backup_enabled', False),
@@ -160,5 +160,59 @@ class OCBSIntegration:
             },
             'heartbeat': {
                 'enabled': config.get('heartbeat_check_enabled', False)
+            },
+            'notifications': {
+                'enabled': config.get('notification_enabled', False),
+                'webhook_url': config.get('webhook_url', 'http://127.0.0.1:18789/hooks/wake'),
+                'webhook_host': config.get('webhook_host', '127.0.0.1'),
             }
         }
+
+    def get_notification_config(self) -> dict:
+        """Get notification configuration."""
+        config = self.get_config()
+        return {
+            'notification_enabled': config.get('notification_enabled', False),
+            'webhook_url': config.get('webhook_url', 'http://127.0.0.1:18789/hooks/wake'),
+            'webhook_host': config.get('webhook_host', '127.0.0.1'),
+            'webhook_token': config.get('webhook_token', ''),
+        }
+
+    def save_notification_config(self, notification_config: dict) -> bool:
+        """Save notification configuration.
+
+        Args:
+            notification_config: Dict with notification settings
+
+        Returns:
+            True if saved successfully
+        """
+        config = self.get_config()
+        config['notification_enabled'] = notification_config.get('notification_enabled', False)
+        config['webhook_url'] = notification_config.get('webhook_url', 'http://127.0.0.1:18789/hooks/wake')
+        config['webhook_host'] = notification_config.get('webhook_host', '127.0.0.1')
+        config['webhook_token'] = notification_config.get('webhook_token', '')
+        self.save_config(config)
+        return True
+
+    def setup_notifications(self, enabled: bool = True, webhook_host: str = '127.0.0.1') -> str:
+        """Configure notification settings.
+
+        Args:
+            enabled: Enable webhook notifications
+            webhook_host: Host where OpenClaw Gateway is running
+
+        Returns:
+            Status message
+        """
+        config = self.get_config()
+        config['notification_enabled'] = enabled
+        config['webhook_host'] = webhook_host
+        # Default port is 18789 (OpenClaw default)
+        config['webhook_url'] = f'http://{webhook_host}:18789/hooks/wake'
+        self.save_config(config)
+
+        if enabled:
+            return f'Notifications enabled - Gateway webhook at {config["webhook_url"]}'
+        else:
+            return 'Notifications disabled'
