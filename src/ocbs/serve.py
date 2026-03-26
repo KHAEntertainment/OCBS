@@ -841,16 +841,36 @@ if __name__ == '__main__':
     print(f"Detected connection: {conn_type} ({host})")
 
 
+def generate_restore_url(checkpoint_id: str, port: int = 3456, host: str = "localhost") -> str:
+    """Generate a restore URL for a checkpoint.
+
+    Args:
+        checkpoint_id: The checkpoint ID (or token) to restore
+        port: Server port (default: 3456, matching start_restore_server default)
+        host: Server host (default: localhost)
+
+    Returns:
+        The tokenized restore endpoint URL: /restore/<token>
+    """
+    return f"http://{host}:{port}/restore/{checkpoint_id}"
+
+
 def format_restore_message(checkpoint_id: str, reason: str,
-                          port: int = 18790, host: str = "localhost") -> str:
-    """Format a restore message with URL for a checkpoint."""
+                          port: int = 3456, host: str = "localhost") -> str:
+    """Format a restore message with URL for a checkpoint.
+
+    Args:
+        checkpoint_id: The checkpoint ID (or token)
+        reason: Reason for the checkpoint
+        port: Server port (default: 3456, matching start_restore_server default)
+        host: Server host (default: localhost)
+
+    Returns:
+        Formatted message including the restore URL
+    """
+    url = generate_restore_url(checkpoint_id, port, host)
     return f"""Checkpoint created: {checkpoint_id}
 Reason: {reason}
 
-Restore functionality requires server setup.
+Restore URL: {url}
 """
-
-
-def generate_restore_url(checkpoint_id: str, port: int = 18790, host: str = "localhost") -> str:
-    """Generate a restore URL for a checkpoint."""
-    return f"http://{host}:{port}/restore?checkpoint={checkpoint_id}"

@@ -378,11 +378,23 @@ class OCBSCore:
 
                 if total_files and sys.stdout.isatty():
                     print(f"\rBacking up... {len(manifest.paths)}/{total_files} files processed", end="", flush=True)
-                elif len(manifest.paths) % 100 == 0:
-                    print(f"Backed up {len(manifest.paths)} files...")
+                elif not sys.stdout.isatty():
+                    # Non-TTY: log progress at dynamic intervals
+                    interval = max(1, total_files // 100) if total_files else 100
+                    if len(manifest.paths) % interval == 0:
+                        if total_files:
+                            print(f"Processed {len(manifest.paths)} / {total_files} files")
+                        else:
+                            print(f"Processed {len(manifest.paths)} files")
 
-        if total_files and sys.stdout.isatty():
+        if sys.stdout.isatty() and total_files:
             print()
+        elif not sys.stdout.isatty():
+            # Non-TTY: always emit final completion log
+            if total_files:
+                print(f"Completed: processed {len(manifest.paths)} / {total_files} files")
+            else:
+                print(f"Completed: processed {len(manifest.paths)} files")
             
         return manifest
 
