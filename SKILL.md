@@ -31,7 +31,7 @@ Create a backup of OpenClaw configuration.
 | `config` | Configuration only (openclaw.json, credentials) |
 | `config+session` | Configuration + sessions directory |
 | `config+session+workspace` | Full backup including workspace |
-| `minimal` | Minimal — smallest footprint backup with essential metadata only |
+| `minimal` | Metadata-only checkpoint (stores backup ID, timestamp, scope, reason in SQLite; no file contents) — intended as a lightweight marker for tracking operations rather than a restorable backup |
 
 **Source behavior:**
 - `direct` reads OpenClaw files directly into OCBS chunk storage
@@ -125,7 +125,7 @@ Run OpenClaw native backup (tar.gz archive with manifest) via OCBS skill.
 ```
 
 **Parameters:**
-- `--scope <scope>` - Backup scope: `config`, `config+session`, `config+session+workspace`, `minimal`
+- `--scope <scope>` - Backup scope: `config`, `config+session`, `config+session+workspace`
 - `--verify` - Verify archive after creation
 - `--output <dir>` - Custom output directory (default: current directory)
 
