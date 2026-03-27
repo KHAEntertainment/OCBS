@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -221,10 +222,8 @@ class OCBSCore:
 
         base_dir = target_dir.resolve()
         full_path = (base_dir / rel_path).resolve()
-        try:
-            full_path.relative_to(base_dir)
-        except ValueError as exc:
-            raise ValueError(f"restore path escapes target directory: {file_path}") from exc
+        if not full_path.is_relative_to(base_dir):
+            raise ValueError(f"restore path escapes target directory: {file_path}")
 
         return full_path
 
@@ -330,6 +329,7 @@ class OCBSCore:
         scope: BackupScope,
         reason: str,
         files: Iterable[tuple[str, bytes]],
+        total_files: Optional[int] = None,
     ) -> BackupManifest:
         """Store backup file content and metadata."""
 
@@ -376,19 +376,42 @@ class OCBSCore:
                     (backup_id, relative_path, chunk.chunk_id),
                 )
 
+                if total_files and sys.stdout.isatty():
+                    print(f"\rBacking up... {len(manifest.paths)}/{total_files} files processed", end="", flush=True)
+                elif not sys.stdout.isatty():
+                    # Non-TTY: log progress at dynamic intervals
+                    interval = max(1, total_files // 100) if total_files else 100
+                    if len(manifest.paths) % interval == 0:
+                        if total_files:
+                            print(f"Processed {len(manifest.paths)} / {total_files} files")
+                        else:
+                            print(f"Processed {len(manifest.paths)} files")
+
+        if sys.stdout.isatty() and total_files:
+            print()
+        elif not sys.stdout.isatty():
+            # Non-TTY: always emit final completion log
+            if total_files:
+                print(f"Completed: processed {len(manifest.paths)} / {total_files} files")
+            else:
+                print(f"Completed: processed {len(manifest.paths)} files")
+            
         return manifest
 
     def _backup_direct(self, scope: BackupScope, reason: str = "") -> BackupManifest:
         """Back up files directly from the OpenClaw home."""
 
+        paths = self._get_paths_for_scope(scope)
+        all_files = self._collect_files(paths)
+        total_files = len(all_files)
+
         def _file_gen():
-            paths = self._get_paths_for_scope(scope)
-            for file_path in self._collect_files(paths):
+            for file_path in all_files:
                 rel_path = str(file_path.relative_to(Path.home()))
                 yield (rel_path, file_path.read_bytes())
 
         backup_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        return self._record_backup(backup_id, scope, reason, _file_gen())
+        return self._record_backup(backup_id, scope, reason, _file_gen(), total_files=total_files)
 
     def _run_native_backup(self, scope: BackupScope, dry_run: bool = False) -> Path:
         """Run OpenClaw native backup and return the archive path."""
@@ -475,16 +498,15 @@ class OCBSCore:
             with tarfile.open(archive_path, "r:gz") as tar:
                 self._safe_extract_archive(tar, extract_dir)
 
+            all_files = [p for p in extract_dir.rglob("*") if p.is_file() and p.name != "manifest.json"]
+            total_files = len(all_files)
+
             def _file_gen():
-                for file_path in sorted(extract_dir.rglob("*")):
-                    if not file_path.is_file():
-                        continue
+                for file_path in all_files:
                     rel_path = file_path.relative_to(extract_dir)
-                    if rel_path == Path("manifest.json"):
-                        continue
                     yield (str(rel_path), file_path.read_bytes())
 
-            return self._record_backup(backup_id, scope, reason, _file_gen())
+            return self._record_backup(backup_id, scope, reason, _file_gen(), total_files=total_files)
 
     def backup(
         self,
