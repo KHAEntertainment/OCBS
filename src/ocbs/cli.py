@@ -23,7 +23,7 @@ def main(ctx, state_dir):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(['minimal', 'config', 'config+session', 'config+session+workspace']),
               default='config', help='Backup scope')
 @click.option(
     '--source',
@@ -104,7 +104,7 @@ def status(ctx):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(['minimal', 'config', 'config+session', 'config+session+workspace']),
               help='Filter by scope')
 @click.pass_context
 def list(ctx, scope):
@@ -124,7 +124,7 @@ def list(ctx, scope):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(['minimal', 'config', 'config+session', 'config+session+workspace']),
               help='Cleanup specific scope')
 @click.pass_context
 def clean(ctx, scope):
@@ -161,7 +161,7 @@ def checkpoint(ctx, reason, serve):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(['minimal', 'config', 'config+session', 'config+session+workspace']),
               default='config', help='Backup scope')
 @click.option('--verify', is_flag=True, help='Verify archive after creation')
 @click.option('--output', '-o', type=click.Path(exists=False, file_okay=False, dir_okay=True),
