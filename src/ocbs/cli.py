@@ -160,5 +160,83 @@ def checkpoint(ctx, reason, serve):
         sys.exit(1)
 
 
+@main.command()
+@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+              default='config', help='Backup scope')
+@click.option('--verify', is_flag=True, help='Verify archive after creation')
+@click.option('--output', '-o', type=click.Path(exists=False, file_okay=False, dir_okay=True),
+              help='Output directory for the archive')
+def native_backup(scope, verify, output):
+    """Run OpenClaw native backup to create a tar.gz archive."""
+    import subprocess
+
+    args = ["openclaw", "backup", "create"]
+
+    if scope == "config":
+        args.append("--only-config")
+    elif scope == "config+session":
+        args.append("--no-include-workspace")
+    # Full scope uses no flags
+
+    if verify:
+        args.append("--verify")
+
+    if output:
+        args.extend(["--output", output])
+
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=600
+        )
+
+        if result.returncode != 0:
+            click.echo(f"Native backup failed: {result.stderr}", err=True)
+            sys.exit(1)
+
+        click.echo(f"Native backup created successfully:\n{result.stdout}")
+    except subprocess.TimeoutExpired:
+        click.echo("Error: Native backup timed out (10 minutes)", err=True)
+        sys.exit(1)
+    except FileNotFoundError:
+        click.echo("Error: openclaw command not found. Ensure OpenClaw is installed.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error running native backup: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument('archive', type=click.Path(exists=True))
+def native_verify(archive):
+    """Verify a native backup archive."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["openclaw", "backup", "verify", archive],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        if result.returncode != 0:
+            click.echo(f"Verification failed: {result.stderr}", err=True)
+            sys.exit(1)
+
+        click.echo(f"Archive verified successfully:\n{result.stdout}")
+    except subprocess.TimeoutExpired:
+        click.echo("Error: Verification timed out", err=True)
+        sys.exit(1)
+    except FileNotFoundError:
+        click.echo("Error: openclaw command not found. Ensure OpenClaw is installed.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error verifying archive: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     main()

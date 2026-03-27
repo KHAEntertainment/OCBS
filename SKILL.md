@@ -20,19 +20,23 @@ Create a backup of OpenClaw configuration.
 ```
 
 **Parameters:**
-- `--scope <scope>` - Backup scope: `config`, `config+session`, `config+session+workspace`
+- `--scope <scope>` - Backup scope: `config`, `config+session`, `config+session+workspace`, `minimal`
 - `--source <source>` - Backup source: `direct` or `native`
 - `--reason <reason>` - Optional reason for the backup
+
+**Scope behavior:**
+
+| Scope | Description |
+|-------|-------------|
+| `config` | Configuration only (openclaw.json, credentials) |
+| `config+session` | Configuration + sessions directory |
+| `config+session+workspace` | Full backup including workspace |
+| `minimal` | Metadata-only checkpoint (stores backup ID, timestamp, scope, reason in SQLite; no file contents) — intended as a lightweight marker for tracking operations rather than a restorable backup |
 
 **Source behavior:**
 - `direct` reads OpenClaw files directly into OCBS chunk storage
 - `native` runs `openclaw backup create`, extracts the archive, then imports it into OCBS chunk storage
 - If the native CLI is unavailable, OCBS falls back to the direct source
-
-**Scope notes:**
-- `config` backs up OpenClaw configuration and credentials.
-- `config+session` adds OpenClaw session state.
-- `config+session+workspace` includes the full workspace.
 
 ### restore
 Restore from a backup or checkpoint.
