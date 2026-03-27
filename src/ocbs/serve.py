@@ -6,11 +6,13 @@ import shutil
 import socket
 import subprocess
 import urllib.parse
+from http.server import HTTPServer
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
 from .core import OCBSCore
+from .notifications import NotificationManager
 
 def get_tailscale_ip() -> Optional[str]:
     """Get Tailscale IP address if available."""
@@ -211,37 +213,16 @@ def get_tailscale_ip() -> Optional[str]:
             json.dump(notification, f)
     
     def _send_webhook_notification(self, token: str, checkpoint_id: str = None):
-        """Send webhook notification to gateway when user clicks proceed."""
-        import urllib.request
-        import urllib.error
-        
-        # Get webhook URL from environment or use default
-        webhook_url = os.environ.get('OCBS_WEBHOOK_URL', 'http://localhost:18789/hooks/ocbs-proceed')
-        webhook_token = os.environ.get('OCBS_WEBHOOK_TOKEN', 'ocbs-webhook-secret')
-        
-        payload = json.dumps({
-            "message": f"OCBS Proceed: User acknowledged checkpoint {checkpoint_id}. Token: {token}",
-            "token": token,
-            "checkpoint_id": checkpoint_id,
-            "action": "proceed"
-        }).encode('utf-8')
-        
-        req = urllib.request.Request(
-            webhook_url,
-            data=payload,
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {webhook_token}'
-            },
-            method='POST'
-        )
-        
-        try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                print(f"Webhook notification sent: {response.status}")
-        except urllib.error.URLError as e:
-            print(f"Webhook notification failed: {e}")
-            # Fall back to file notification
+        """Send webhook notification to gateway when user clicks proceed.
+
+        Uses the proper /hooks/wake endpoint with 'text' field format
+        instead of the incorrect /hooks/ocbs-proceed endpoint.
+        """
+        notifier = NotificationManager(state_dir=self.state_dir)
+        success = notifier.notify_proceed(checkpoint_id, token)
+
+        if not success:
+            # Fall back to file notification if webhook fails
             self._write_proceed_notification(token, checkpoint_id)
     
     def get_pending_proceed_notifications(self) -> list[dict]:
@@ -362,6 +343,53 @@ def get_tailscale_ip() -> Optional[str]:
         step1_button_text = "Step 1: I received this - start changes"
         step1_button_disabled = ""
         work_underway_display = "none"
+
+        # Get raw scope (before HTML escaping) to determine what data exists
+        raw_scope = checkpoint_info.get('scope', '')
+
+        # Stage 2: Partial restore (config, or config+session if workspace exists)
+        if raw_scope == "config":
+            stage2_label = "Restore Configuration & Restart"
+        elif raw_scope == "config+session":
+            stage2_label = "Restore Config + Sessions & Restart"
+        elif raw_scope == "config+session+workspace":
+            stage2_label = "Restore Config + Sessions & Restart"
+        else:
+            stage2_label = "Restore Backup & Restart"
+
+        # Stage 3: Full restore (only for backups with workspace/session data)
+        has_extended_data = "session" in raw_scope or "workspace" in raw_scope
+        stage3_label = "Full Restore & Restart"
+
+        # Build stage2 button HTML
+        stage2_html = f"""
+            <form action="/restore" method="POST">
+                <input type="hidden" name="token" value="{token}">
+                <input type="hidden" name="restore_scope" value="partial">
+                <button type="submit" class="btn btn-danger" {step1_button_disabled}
+                        onclick="return confirm('Are you sure you want to RESTORE? This will revert configuration changes!');">
+                    <span class="step-label step2">Step 2</span>
+                    &#9888;&#65039; {stage2_label}
+                    <span class="spinner" id="restore-spinner"></span>
+                </button>
+            </form>
+        """
+
+        # Build stage3 button HTML (only if session/workspace data exists)
+        stage3_html = ""
+        if has_extended_data:
+            stage3_html = f"""
+            <form action="/restore" method="POST">
+                <input type="hidden" name="token" value="{token}">
+                <input type="hidden" name="restore_scope" value="full">
+                <button type="submit" class="btn btn-danger" {step1_button_disabled}
+                        onclick="return confirm('Are you sure you want to do a FULL RESTORE? This will revert ALL changes including workspace data!');">
+                    <span class="step-label step2">Step 3</span>
+                    &#9888;&#65039; {stage3_label}
+                    <span class="spinner" id="full-restore-spinner"></span>
+                </button>
+            </form>
+        """
         
         if is_restored:
             status_message = """
@@ -615,19 +643,13 @@ def get_tailscale_ip() -> Optional[str]:
                 <input type="hidden" name="token" value="{token}">
                 <button type="submit" class="btn btn-restart" {step1_button_disabled}
                         onclick="return confirm('Restart the gateway without restoring? This may help resolve minor issues.');">
-                    🔄 Restart Gateway
+                    &#8635; Restart Gateway Only
                 </button>
             </form>
-            
-            <form action="/restore" method="POST">
-                <input type="hidden" name="token" value="{token}">
-                <button type="submit" class="btn btn-danger" {step1_button_disabled} 
-                        onclick="return confirm('Are you sure you want to RESTORE? This will revert all changes!');">
-                    <span class="step-label step2">Step 2</span>
-                    🔴 Restore Backup & Restart
-                    <span class="spinner" id="restore-spinner"></span>
-                </button>
-            </form>
+
+            {stage2_html}
+
+            {stage3_html}
         </div>
         
         <p class="expiry">Link expires in {hours}h {minutes}m</p>
@@ -693,13 +715,16 @@ def get_tailscale_ip() -> Optional[str]:
             }});
         }});
         
-        // Handle restore form
-        document.querySelector('form[action="/restore"]').addEventListener('submit', function(e) {{
-            if (!confirm('Are you sure? This will restore from the checkpoint.')) {{
-                e.preventDefault();
-            }} else {{
-                document.getElementById('restore-spinner').style.display = 'inline-block';
-            }}
+        // Handle restore forms (both partial and full)
+        document.querySelectorAll('form[action="/restore"]').forEach(function(form) {{
+            form.addEventListener('submit', function(e) {{
+                const scope = this.querySelector('input[name="restore_scope"]').value;
+                const spinnerId = (scope === 'full') ? 'full-restore-spinner' : 'restore-spinner';
+                const spinner = document.getElementById(spinnerId);
+                if (spinner) {{
+                    spinner.style.display = 'inline-block';
+                }}
+            }});
         }});
     </script>
 </body>
@@ -838,52 +863,38 @@ if __name__ == '__main__':
     # Test detection
     conn_type, host = detect_connection_type()
     print(f"Detected connection: {conn_type} ({host})")
-    
-    def stop(self):
-        """Stop the HTTP server."""
-        global _global_server
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
-        # Clear global reference if this is the global server
-        if _global_server is self:
-            _global_server = None
 
 
-# Global server instance for convenience functions
-_global_server: Optional[RestorePageServer] = None
+def generate_restore_url(checkpoint_id: str, port: int = 3456, host: str = "localhost") -> str:
+    """Generate a restore URL for a checkpoint.
 
+    Args:
+        checkpoint_id: The checkpoint ID (or token) to restore
+        port: Server port (default: 3456, matching start_restore_server default)
+        host: Server host (default: localhost)
 
-def start_restore_server(port: int = 18790, host: str = "localhost",
-                        bind_host: str = "127.0.0.1", state_dir: Optional[Path] = None):
-    """Start the restore server in the background."""
-    global _global_server
-    if _global_server is None:
-        _global_server = RestorePageServer(state_dir=state_dir, port=port, host=host, bind_host=bind_host)
-        _global_server.start(background=True)
-    return _global_server
+    Returns:
+        The tokenized restore endpoint URL: /restore/<token>
+    """
+    return f"http://{host}:{port}/restore/{checkpoint_id}"
 
 
 def format_restore_message(checkpoint_id: str, reason: str,
-                          port: int = 18790, host: str = "localhost") -> str:
-    """Format a restore message with URL for a checkpoint."""
-    global _global_server
+                          port: int = 3456, host: str = "localhost") -> str:
+    """Format a restore message with URL for a checkpoint.
 
-    # Ensure server is running
-    if _global_server is None:
-        start_restore_server(port=port, host=host)
+    Args:
+        checkpoint_id: The checkpoint ID (or token)
+        reason: Reason for the checkpoint
+        port: Server port (default: 3456, matching start_restore_server default)
+        host: Server host (default: localhost)
 
-    # Create serve record for this checkpoint
-    token = _global_server.serve_checkpoint(checkpoint_id)
-    url = _global_server.get_restore_url(token)
-
-    message = f"""
-Checkpoint created: {checkpoint_id}
+    Returns:
+        Formatted message including the restore URL
+    """
+    url = generate_restore_url(checkpoint_id, port, host)
+    return f"""Checkpoint created: {checkpoint_id}
 Reason: {reason}
 
-Restore URL (expires in 4 hours):
-{url}
-
-Share this URL to allow emergency restore of this checkpoint.
+Restore URL: {url}
 """
-    return message.strip()

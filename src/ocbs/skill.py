@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from .core import BackupSource, BackupScope, OCBSCore
-from .serve import format_restore_message, start_restore_server
+from .serve import generate_restore_url, format_restore_message, start_restore_server
 
 
 class OCBSBackupSkill:

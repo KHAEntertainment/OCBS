@@ -505,10 +505,62 @@ class TestCleanup:
             
             # Run cleanup
             ocbs.cleanup(BackupScope.CONFIG)
-            
+
             # Should still have backups
             backups = ocbs.list_backups(BackupScope.CONFIG)
             assert len(backups) > 0
         finally:
             if original_home:
                 os.environ['HOME'] = original_home
+
+
+class TestResolveRestorePath:
+    """Tests for _resolve_restore_path path validation."""
+
+    def test_normal_relative_path(self, ocbs, temp_state_dir):
+        """Test that normal relative paths are resolved correctly."""
+        target = temp_state_dir / "restore"
+        result = ocbs._resolve_restore_path("config/settings.json", target)
+        assert result.resolve() == (target / "config" / "settings.json").resolve()
+
+    def test_openclaw_stripped(self, ocbs, temp_state_dir):
+        """Test that .openclaw prefix is stripped."""
+        target = temp_state_dir / "restore"
+        result = ocbs._resolve_restore_path(".openclaw/config/settings.json", target)
+        assert result.resolve() == (target / "config" / "settings.json").resolve()
+
+    def test_absolute_path_rejected(self, ocbs, temp_state_dir):
+        """Test that absolute paths are rejected."""
+        target = temp_state_dir / "restore"
+        with pytest.raises(ValueError, match="absolute restore paths are not allowed"):
+            ocbs._resolve_restore_path("/etc/passwd", target)
+
+    def test_empty_path_rejected(self, ocbs, temp_state_dir):
+        """Test that empty paths are rejected."""
+        target = temp_state_dir / "restore"
+        with pytest.raises(ValueError, match="empty restore path is not allowed"):
+            ocbs._resolve_restore_path("", target)
+
+    def test_path_traversal_rejected(self, ocbs, temp_state_dir):
+        """Test that path traversal attempts are rejected."""
+        target = temp_state_dir / "restore"
+        with pytest.raises(ValueError, match="restore path escapes target directory"):
+            ocbs._resolve_restore_path("../etc/passwd", target)
+
+    def test_deep_path_traversal_rejected(self, ocbs, temp_state_dir):
+        """Test that deep path traversal attempts are rejected."""
+        target = temp_state_dir / "restore"
+        with pytest.raises(ValueError, match="restore path escapes target directory"):
+            ocbs._resolve_restore_path("subdir/../../../../etc/passwd", target)
+
+    def test_symlink_escape_via_realpath(self, ocbs, temp_state_dir):
+        """Test that symlinks that escape target via realpath are rejected."""
+        target = temp_state_dir / "restore"
+        # Create a symlink inside target that points to parent
+        subdir = target / "subdir"
+        subdir.mkdir(parents=True)
+        symlink = subdir / "link"
+        symlink.symlink_to(temp_state_dir.parent)
+        # This path resolves via the symlink to escape the target
+        with pytest.raises(ValueError, match="restore path escapes target directory"):
+            ocbs._resolve_restore_path("subdir/link/../etc/passwd", target)
