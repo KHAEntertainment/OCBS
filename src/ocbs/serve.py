@@ -2,10 +2,17 @@
 Web server for serving OCBS restore pages with token-based authentication.
 """
 
+import html as html_module
+import json
+import os
+import secrets
 import shutil
 import socket
+import sqlite3
 import subprocess
+import threading
 import urllib.parse
+from datetime import datetime, timedelta
 from http.server import HTTPServer
 from pathlib import Path
 from typing import Optional
@@ -844,10 +851,11 @@ if __name__ == '__main__':
 def format_restore_message(checkpoint_id: str, reason: str,
                           port: int = 18790, host: str = "localhost") -> str:
     """Format a restore message with URL for a checkpoint."""
+    url = generate_restore_url(checkpoint_id, port, host)
     return f"""Checkpoint created: {checkpoint_id}
 Reason: {reason}
 
-Restore functionality requires server setup.
+Restore URL: {url}
 """
 
 
