@@ -446,7 +446,7 @@ class TestServeRecords:
         with sqlite3.connect(ocbs.db_path) as conn:
             conn.execute("DROP TABLE serve_records")
 
-        assert ocbs.get_checkpoint_serves() == []
+        assert ocbs.get_checkpoint_serves("fake_id") == []
 
 
 class TestBackupScope:
