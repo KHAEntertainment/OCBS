@@ -10,6 +10,9 @@ import click
 from .core import BackupSource, BackupScope, OCBSCore
 from .serve import format_restore_message, start_restore_server
 
+# Shared scope choices to prevent drift
+SCOPE_CHOICES = ['minimal', 'config', 'config+session', 'config+session+workspace']
+
 
 @click.group()
 @click.option('--state-dir', type=click.Path(exists=False, file_okay=False, dir_okay=True),
@@ -23,7 +26,7 @@ def main(ctx, state_dir):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(SCOPE_CHOICES),
               default='config', help='Backup scope')
 @click.option(
     '--source',
@@ -38,6 +41,13 @@ def backup(ctx, scope, source, reason):
     core = ctx.obj['core']
     scope_enum = BackupScope(scope)
     source_enum = BackupSource(source) if source else None
+    
+    # Guard: prevent minimal scope with native source until implemented
+    if scope == "minimal" and source == "native":
+        raise click.ClickException(
+            "Native backup does not yet support 'minimal' scope. "
+            "Use --source direct or choose a different scope."
+        )
     
     try:
         manifest = core.backup(scope_enum, reason, source=source_enum)
@@ -104,7 +114,7 @@ def status(ctx):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(SCOPE_CHOICES),
               help='Filter by scope')
 @click.pass_context
 def list(ctx, scope):
@@ -124,7 +134,7 @@ def list(ctx, scope):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(SCOPE_CHOICES),
               help='Cleanup specific scope')
 @click.pass_context
 def clean(ctx, scope):
@@ -161,7 +171,7 @@ def checkpoint(ctx, reason, serve):
 
 
 @main.command()
-@click.option('--scope', type=click.Choice(['config', 'config+session', 'config+session+workspace']),
+@click.option('--scope', type=click.Choice(SCOPE_CHOICES),
               default='config', help='Backup scope')
 @click.option('--verify', is_flag=True, help='Verify archive after creation')
 @click.option('--output', '-o', type=click.Path(exists=False, file_okay=False, dir_okay=True),
@@ -169,6 +179,13 @@ def checkpoint(ctx, reason, serve):
 def native_backup(scope, verify, output):
     """Run OpenClaw native backup to create a tar.gz archive."""
     import subprocess
+
+    # Fail fast until minimal scope semantics are implemented for native backup
+    if scope == "minimal":
+        raise click.ClickException(
+            "Native backup does not yet support 'minimal' scope. "
+            "Use 'config', 'config+session', or 'config+session+workspace'."
+        )
 
     args = ["openclaw", "backup", "create"]
 
